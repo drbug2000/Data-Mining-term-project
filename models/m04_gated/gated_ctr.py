@@ -188,17 +188,19 @@ class GatedCTRModel(BaseRecoModel):
 
     def score_ad_candidates(self, user_id: int, query_emb: np.ndarray,
                             candidate_embs: np.ndarray) -> np.ndarray:
-        """Task B: content(bilinear) + interest 점수 (N,)."""
+        """Task B: raw query-ad retrieval + clicked-ad interest 점수 (N,).
+
+        클릭튜닝 content head 는 Task A click prediction 에 맞춰져 있어 전체 광고 retrieval 에서는
+        query-ad cosine 보다 불안정하다. Task B 는 검색어와 후보 광고의 원래 embedding 정렬을
+        기본 신호로 쓰고, 유저 클릭 광고 prototype 이 있으면 개인화 보너스만 더한다.
+        """
         Q = _l2_normalize(query_emb[None, :]); C = _l2_normalize(candidate_embs)
-        if not self._fitted or self._U is None:
-            return C @ Q[0]
-        uq = Q @ self._U; uq = uq / (np.linalg.norm(uq, axis=1, keepdims=True) + 1e-8)
-        vc = C @ self._V; vc = vc / (np.linalg.norm(vc, axis=1, keepdims=True) + 1e-8)
-        logit = self._scale * (vc @ uq[0]) + self._b_head
+        score = C @ Q[0]
         protos = self._user_protos.get(user_id)
-        if protos is not None and self.config.interest_beta > 0:
-            logit = logit + self.config.interest_beta * (C @ protos.T).max(axis=1)
-        return logit
+        beta = self.config.task_b_interest_beta
+        if self._fitted and protos is not None and beta > 0:
+            score = score + beta * (C @ protos.T).max(axis=1)
+        return score
 
     def predict_click(self, user_id: int, query_emb: np.ndarray, ad_emb: np.ndarray) -> int:
         return int(self.score_click(user_id, query_emb, ad_emb) > 0.5)

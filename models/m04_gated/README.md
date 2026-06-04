@@ -7,7 +7,7 @@
 
 | 모델 | Task A F1 | Task A AUC | Task B NDCG@3 |
 |---|---:|---:|---:|
-| **m04_gated (5 CTR + content, F1-objective)** | **0.0970** | **0.6977** | 0.0023 |
+| **m04_gated (5 CTR + content, F1-objective)** | **0.0970** | **0.6977** | 0.1368 |
 
 원본 방법론(AI506 Task1 `5+content`, honest F1 0.1106 / AUC 0.7041)을 이 프레임워크에서
 재현. 2026-06-04 재실행 기준 AUC 는 원본과 근접하고 F1 도 ~0.10 으로 재현된다
@@ -24,6 +24,10 @@ s = Σ wᵢ·log(CTRᵢ) + w_c·z(content) + LO·[not logged_on]
 
 선택: `GateConfig(use_gate=True)` → support 시그모이드 게이트(warm=entity/cold=content). 기본은
 위 log-linear(원본 0.1106 재현 경로).
+
+Task B 광고 추천(`score_ad_candidates`)은 클릭튜닝 head 대신 raw query-ad cosine 을 기본 retrieval
+신호로 쓰고, 유저 클릭 광고 prototype 유사도를 `task_b_interest_beta`만큼 더한다. 이 경로는 Task A
+클릭 점수(`score_pairs`)와 분리되어 있어 Task A F1/AUC에는 영향을 주지 않는다.
 
 ## train/val 분리 (원본 honest 재현의 핵심)
 
