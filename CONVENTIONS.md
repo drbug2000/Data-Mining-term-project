@@ -292,15 +292,240 @@ class ModelConfig:
 
 ---
 
-## 6. 모델 추가 방법
+## 6. 모델 프레임워크 — `config.py` / `base.py` / `predictor.py`
 
-새 추천 모델은 `model/base.py`의 `BaseRecoModel`을 상속한다.
+모든 모델 코드는 세 파일이 정의한 규약 위에서 작동한다.  
+이 규약을 어기면 실험 스크립트가 특정 모델에 종속되어 재사용성이 깨진다.
+
+```
+config.py ──→ base.py ──→ [구현 모델] ──→ predictor.py
+  (파라미터)   (인터페이스)   (로직)         (학습·평가)
+```
+
+---
+
+### 6-1. `config.py` — 하이퍼파라미터 컨테이너
+
+**역할**: 하이퍼파라미터를 한 곳에서 정의하고, JSON으로 저장·복원한다.  
+**규칙**:
 
 ```python
-# model/my_model.py
+from __future__ import annotations
+import json
+from dataclasses import asdict, dataclass
+
+
+@dataclass                        # 반드시 @dataclass 사용
+class ModelConfig:
+
+    # ------------------------------------------------------------------
+    # 그룹 이름 (Architecture / Update rates / Prediction 등)
+    # ------------------------------------------------------------------
+
+    k: int = 5                    # 모든 필드에 기본값 필수
+    """필드 설명을 필드 바로 아래 docstring으로 작성한다."""   # ← 위가 아니라 아래
+
+    alpha_click: float = 0.5
+    """클릭 업데이트 강도. alpha_search보다 크게 설정한다."""
+
+    # ------------------------------------------------------------------
+    # Serialization helpers — 반드시 포함 (4개 메서드)
+    # ------------------------------------------------------------------
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> ModelConfig:
+        valid_keys = cls.__dataclass_fields__.keys()
+        return cls(**{k: v for k, v in d.items() if k in valid_keys})  # 미지 키 무시
+
+    def save(self, path: str) -> None:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(self.to_dict(), f, indent=2)
+
+    @classmethod
+    def load(cls, path: str) -> ModelConfig:
+        with open(path, encoding="utf-8") as f:
+            return cls.from_dict(json.load(f))
+
+    def __str__(self) -> str:          # 실험 로그 출력용 — 형식 유지
+        lines = ["ModelConfig("]
+        for k, v in self.to_dict().items():
+            lines.append(f"    {k}={v!r},")
+        lines.append(")")
+        return "\n".join(lines)
+```
+
+**금지사항**:
+- `config.py`에 모델 로직, numpy 연산, 데이터 로딩 코드를 넣지 않는다.
+- 필드에 기본값 없이 선언하지 않는다 (`k: int` ❌, `k: int = 5` ✅).
+- `from_dict`에서 미지 키를 `KeyError`로 터뜨리지 않는다 — `valid_keys` 필터 필수.
+
+---
+
+### 6-2. `base.py` — 추상 인터페이스
+
+**역할**: 모든 추천 모델이 구현해야 하는 계약을 정의한다.  
+`experiments/`와 `predictor.py`는 **이 파일만 바라본다** — 구체 모델을 직접 참조하지 않는다.
+
+**메서드 4계층** (클래스 내 선언 순서 고정):
+
+```python
+from __future__ import annotations
+from abc import ABC, abstractmethod
+import numpy as np
+from model.config import ModelConfig
+
+
+class BaseRecoModel(ABC):
+
+    def __init__(self, config: ModelConfig):
+        self.config = config          # config를 self.config에 저장하는 것이 유일한 역할
+
+    # ------------------------------------------------------------------
+    # 1계층 — 훈련 (스트리밍 업데이트)  ← abstractmethod
+    # ------------------------------------------------------------------
+
+    @abstractmethod
+    def update_search(self, user_id: int, search_emb: np.ndarray) -> None:
+        """검색 이벤트 → 반환값 없음 (None)."""
+
+    @abstractmethod
+    def update_click(self, user_id: int, ad_emb: np.ndarray, clicked: bool) -> None:
+        """광고 노출 이벤트 → 반환값 없음 (None)."""
+
+    # ------------------------------------------------------------------
+    # 2계층 — 예측  ← abstractmethod
+    # ------------------------------------------------------------------
+
+    @abstractmethod
+    def predict_ad(self, user_id: int, query_emb: np.ndarray,
+                   candidate_embs: np.ndarray, candidate_ids: list[int]) -> int:
+        """Task B → AdID (int) 반환."""
+
+    @abstractmethod
+    def predict_click(self, user_id: int, query_emb: np.ndarray,
+                      ad_emb: np.ndarray) -> int:
+        """Task A → 0 또는 1 반환."""
+
+    # ------------------------------------------------------------------
+    # 3계층 — 스코어링 (선택 구현, 평가에 필요)  ← NotImplementedError
+    # ------------------------------------------------------------------
+
+    def score_ad_candidates(self, user_id: int, query_emb: np.ndarray,
+                            candidate_embs: np.ndarray) -> np.ndarray:
+        """Task B → 연속 점수 배열 (N_candidates,) 반환."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement score_ad_candidates()"
+        )
+
+    def score_click(self, user_id: int, query_emb: np.ndarray,
+                    ad_emb: np.ndarray) -> float:
+        """Task A → 연속 점수 (float) 반환."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement score_click()"
+        )
+
+    # ------------------------------------------------------------------
+    # 4계층 — 디버깅 / 분석 (선택 구현)  ← NotImplementedError
+    # ------------------------------------------------------------------
+
+    def get_interests(self, user_id: int) -> np.ndarray:
+        """유저의 interest 행렬 (k, dim) 반환 — 디버깅용."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement get_interests()"
+        )
+```
+
+**규칙 요약**:
+
+| 계층 | 데코레이터 | 반환 실패 시 |
+|------|-----------|------------|
+| 1 훈련 | `@abstractmethod` | 구현 없으면 인스턴스화 불가 |
+| 2 예측 | `@abstractmethod` | 구현 없으면 인스턴스화 불가 |
+| 3 스코어링 | (없음) | `raise NotImplementedError(...)` |
+| 4 디버깅 | (없음) | `raise NotImplementedError(...)` |
+
+- `NotImplementedError` 메시지는 반드시 `f"{type(self).__name__} does not implement X()"` 형식으로 작성한다 — 어느 클래스에서 누락됐는지 즉시 파악 가능.
+- `base.py`를 직접 수정하지 않는다. 인터페이스 변경이 필요하면 팀원과 협의 후 진행한다.
+
+---
+
+### 6-3. `predictor.py` — 모델 독립 학습·평가 함수
+
+**역할**: `BaseRecoModel` 인터페이스만 사용해 학습, 스코어링, 평가를 수행한다.  
+구체 모델 클래스(`MultiInterestModel` 등)를 직접 import하거나 타입으로 사용하지 않는다.
+
+**함수 5계층** (파일 내 선언 순서 고정):
+
+```
+1. 훈련       train()
+2. 스코어링   score_task_a(), score_task_b()          → 연속값
+3. 예측       predict_task_a(), predict_task_b()      → 이진/순위값 (제출용)
+4. 평가       evaluate_task_a(), evaluate_task_b_ndcg() → 지표 dict
+5. 내부 유틸  _multiclass_f1(), _binary_auc()          → _접두사
+```
+
+**스코어링 vs 예측 분리 원칙**:
+
+```python
+# score_*: 연속 점수 반환 → AUC·NDCG 계산에 사용
+def score_task_a(model: BaseRecoModel, pairs: list) -> list[float]: ...
+def score_task_b(model: BaseRecoModel, queries: list,
+                 candidate_embs: np.ndarray) -> dict[int, np.ndarray]: ...
+
+# predict_*: score_* 결과에 threshold·argmax를 적용 → 최종 제출값
+def predict_task_a(model, pairs, threshold) -> list[int]:
+    return [int(s > 1 - threshold) for s in score_task_a(model, pairs)]
+
+def predict_task_b(model, queries, candidate_embs, candidate_ids) -> dict[int, int]:
+    scores_dict = score_task_b(model, queries, candidate_embs)
+    return {sid: candidate_ids[int(np.argmax(sc))] for sid, sc in scores_dict.items()}
+```
+
+**evaluate_* 반환 형식**:
+
+```python
+# Task A
+{
+    "accuracy" : float,
+    "precision": float,   # IsClick=1 기준
+    "recall"   : float,
+    "f1"       : float,
+    "auc"      : float,
+    "per_class": {0: {tp, fp, fn, precision, recall, f1, support},
+                  1: {...}},
+}
+
+# Task B
+{
+    "ndcg@3"   : float,
+    "n_queries": int,
+    "rank_dist": {1: int, 2: int, 3: int, ">3": int},
+}
+```
+
+**금지사항**:
+- `predictor.py`에서 `MultiInterestModel`, `GNNModel` 등 구체 클래스를 import하지 않는다.
+- 새로운 평가 지표가 필요하면 이 파일에 추가한다 — 실험 스크립트에 중복 구현 금지.
+- `train()` 함수 내부에서 이벤트 순서를 변경하지 않는다 (temporal signal 보존).
+
+---
+
+## 7. 새 모델 추가 절차
+
+### Step 1 — `model/my_model.py` 생성
+
+```python
+"""
+my_model.py — 한 줄 설명.
+"""
+
 from __future__ import annotations
 
 import numpy as np
+
 from model.base import BaseRecoModel
 from model.config import ModelConfig
 
@@ -308,35 +533,79 @@ from model.config import ModelConfig
 class MyModel(BaseRecoModel):
 
     def __init__(self, config: ModelConfig):
-        super().__init__(config)
+        super().__init__(config)              # self.config 자동 설정
         # 내부 상태 초기화
 
     # ------------------------------------------------------------------
-    # 필수 구현 (abstractmethod)
+    # 1계층 — 훈련 (필수 구현)
     # ------------------------------------------------------------------
 
-    def update_search(self, user_id: int, search_emb: np.ndarray) -> None: ...
-    def update_click(self, user_id: int, ad_emb: np.ndarray, clicked: bool) -> None: ...
-    def predict_ad(self, user_id, query_emb, candidate_embs, candidate_ids) -> int: ...
-    def predict_click(self, user_id, query_emb, ad_emb) -> int: ...
+    def update_search(self, user_id: int, search_emb: np.ndarray) -> None:
+        ...
+
+    def update_click(self, user_id: int, ad_emb: np.ndarray, clicked: bool) -> None:
+        ...
 
     # ------------------------------------------------------------------
-    # 권장 구현 (평가에 필요)
+    # 2계층 — 예측 (필수 구현)
     # ------------------------------------------------------------------
 
-    def score_ad_candidates(self, user_id, query_emb, candidate_embs) -> np.ndarray: ...
-    def score_click(self, user_id, query_emb, ad_emb) -> float: ...
+    def predict_ad(self, user_id: int, query_emb: np.ndarray,
+                   candidate_embs: np.ndarray, candidate_ids: list[int]) -> int:
+        scores = self.score_ad_candidates(user_id, query_emb, candidate_embs)
+        return candidate_ids[int(np.argmax(scores))]   # score → argmax 패턴 권장
+
+    def predict_click(self, user_id: int, query_emb: np.ndarray,
+                      ad_emb: np.ndarray) -> int:
+        return int(self.score_click(user_id, query_emb, ad_emb) > 1 - self.config.threshold)
+
+    # ------------------------------------------------------------------
+    # 3계층 — 스코어링 (권장 구현 — predictor.py가 호출)
+    # ------------------------------------------------------------------
+
+    def score_ad_candidates(self, user_id: int, query_emb: np.ndarray,
+                            candidate_embs: np.ndarray) -> np.ndarray:
+        ...  # (N_candidates,) 반환
+
+    def score_click(self, user_id: int, query_emb: np.ndarray,
+                    ad_emb: np.ndarray) -> float:
+        ...  # 연속 점수 반환
+
+    # ------------------------------------------------------------------
+    # 4계층 — 디버깅 (선택 구현)
+    # ------------------------------------------------------------------
+
+    def get_interests(self, user_id: int) -> np.ndarray:
+        ...  # (k, dim) 반환
 ```
 
-`model/__init__.py`에 추가:
+### Step 2 — `model/__init__.py` 등록
 
 ```python
-from model.my_model import MyModel
+from model.config import ModelConfig
+from model.base import BaseRecoModel
+from model.interest import MultiInterestModel
+from model.my_model import MyModel          # 추가
 ```
+
+### Step 3 — 실험 스크립트에서 사용
+
+```python
+from model import ModelConfig, MyModel
+from model.predictor import train, score_task_a, evaluate_task_a
+
+model = MyModel(ModelConfig(k=5, gamma=0.7))
+train(model, ds.training_stream())
+scores = score_task_a(model, ds.val_click_queries())
+metrics = evaluate_task_a(scores, ds.val_click_answers(), threshold=0.5)
+```
+
+`predictor.py`의 모든 함수가 `BaseRecoModel` 인터페이스를 통해 작동하므로,  
+**실험 스크립트를 전혀 수정하지 않고** 모델만 교체해 동일한 평가 파이프라인을 재사용할 수 있다.
 
 ---
 
-## 7. 실험 스크립트 작성 규칙
+## 8. 실험 스크립트 작성 규칙
 
 ```python
 """
@@ -391,7 +660,7 @@ if __name__ == "__main__":
 
 ---
 
-## 8. 평가 함수 사용 규칙
+## 9. 평가 함수 사용 규칙
 
 공통 평가 함수는 `model/predictor.py`에만 정의한다.  
 실험 스크립트에서 중복 구현 **금지**.
@@ -420,7 +689,7 @@ def sweep_threshold(scores, answers_df):
 
 ---
 
-## 9. Git 커밋 규칙
+## 10. Git 커밋 규칙
 
 ### 커밋 메시지 형식
 
@@ -456,7 +725,7 @@ docs: REPORT.md — 가설 검증 분석 (섹션 7) 추가
 
 ---
 
-## 10. `.gitignore` 관리 원칙
+## 11. `.gitignore` 관리 원칙
 
 | 제외 대상 | 이유 |
 |---------|------|
