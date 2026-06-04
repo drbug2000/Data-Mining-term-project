@@ -3,14 +3,15 @@
 기존 `shared/`·`models/` 코드를 건드리지 않고 추가한 모델(gyuchan). 공통 평가
 (`shared.eval.predictor`)와 공통 데이터(`shared.data.dataset`)를 그대로 사용한다.
 
-## 결과 (실데이터, click_validation 20k)
+## 결과 (실데이터 validation)
 
-| 모델 | Task A F1 | AUC |
-|---|---|---|
-| **m04_gated (5 CTR + content, F1-objective)** | **0.1014** | **0.6995** |
+| 모델 | Task A F1 | Task A AUC | Task B NDCG@3 |
+|---|---:|---:|---:|
+| **m04_gated (5 CTR + content, F1-objective)** | **0.0970** | **0.6977** | 0.0023 |
 
 원본 방법론(AI506 Task1 `5+content`, honest F1 0.1106 / AUC 0.7041)을 이 프레임워크에서
-재현. AUC 가 원본과 일치하고 F1 도 ~0.10 으로 재현된다(numpy 재구현 + threshold sweep 차이로 ±0.01).
+재현. 2026-06-04 재실행 기준 AUC 는 원본과 근접하고 F1 도 ~0.10 으로 재현된다
+(numpy 재구현 + threshold sweep 차이로 ±0.01).
 
 ## 모델
 

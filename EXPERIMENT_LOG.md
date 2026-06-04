@@ -91,7 +91,7 @@ Val Task A (20,000 쌍) 기준:
 | GNN + MLP (16d + early stop) | 0.0524 | 0.6398 | smoothing 추가 |
 | GNN + MLP (8d, user emb 제거) | 0.0480 | 0.6208 | |
 | GNN + MLP (6d, 통계+user 제거) | 0.0749 | 0.6435 | **user emb 제거 핵심** |
-| GNN + MLP (10d, pos+cat 추가) | **0.0760** | **0.6691** | ✅ **현재 최고** |
+| GNN + MLP (10d, pos+cat 추가) | **0.0760** | **0.6691** | ✅ **GNN+CTR 파이프라인 최고** |
 
 ### 과적합 개선 이력
 

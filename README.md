@@ -33,11 +33,17 @@ project-root/
 │   │   └── experiments/
 │   │       └── gnn_eval.py
 │   │
-│   └── m03_ctr_mlp/            #   CTR MLP (GNN repr + 통계 피처)
-│       ├── ctr_mlp.py          #     CTRConfig, CTRPredictor
+│   ├── m03_ctr_mlp/            #   CTR MLP (GNN repr + 통계 피처)
+│   │   ├── ctr_mlp.py          #     CTRConfig, CTRPredictor
+│   │   └── experiments/
+│   │       ├── ctr_eval.py
+│   │       └── ...
+│   │
+│   └── m04_gated/              #   F1-objective CTR log-linear + content head
+│       ├── config.py           #     GateConfig
+│       ├── gated_ctr.py        #     GatedCTRModel
 │       └── experiments/
-│           ├── ctr_eval.py
-│           └── ...
+│           └── eval_gated.py
 │
 ├── analysis/                   # 데이터·임베딩 범용 분석 (모델 독립)
 │   ├── embedding_clustering.py
@@ -92,6 +98,9 @@ python -X utf8 models/m02_gnn/experiments/gnn_eval.py
 
 # CTR MLP 평가
 python -X utf8 models/m03_ctr_mlp/experiments/ctr_eval.py
+
+# GatedCTR 평가
+python -X utf8 models/m04_gated/experiments/eval_gated.py
 ```
 
 ---
@@ -101,7 +110,7 @@ python -X utf8 models/m03_ctr_mlp/experiments/ctr_eval.py
 ### 1. 디렉토리 생성
 
 ```
-models/m04_your_model/
+models/m0X_your_model/
 ├── __init__.py
 ├── config.py          # YourConfig dataclass
 ├── your_model.py      # YourModel(BaseRecoModel)
@@ -112,11 +121,11 @@ models/m04_your_model/
 ### 2. `BaseRecoModel` 상속
 
 ```python
-# models/m04_your_model/your_model.py
+# models/m0X_your_model/your_model.py
 from __future__ import annotations
 import numpy as np
 from shared.base import BaseRecoModel
-from models.m04_your_model.config import YourConfig
+from models.m0X_your_model.config import YourConfig
 
 
 class YourModel(BaseRecoModel):
@@ -138,15 +147,15 @@ class YourModel(BaseRecoModel):
 ### 3. `__init__.py` 등록
 
 ```python
-# models/m04_your_model/__init__.py
-from models.m04_your_model.config import YourConfig
-from models.m04_your_model.your_model import YourModel
+# models/m0X_your_model/__init__.py
+from models.m0X_your_model.config import YourConfig
+from models.m0X_your_model.your_model import YourModel
 ```
 
 ### 4. 실험 스크립트 작성
 
 ```python
-# models/m04_your_model/experiments/your_eval.py
+# models/m0X_your_model/experiments/your_eval.py
 from __future__ import annotations
 import sys, time
 from pathlib import Path
@@ -158,7 +167,7 @@ sys.path.insert(0, str(ROOT))
 from shared.data.dataset import RecoDataset
 from shared.eval.predictor import train, score_task_a, score_task_b
 from shared.eval.predictor import evaluate_task_a, evaluate_task_b_ndcg
-from models.m04_your_model import YourConfig, YourModel
+from models.m0X_your_model import YourConfig, YourModel
 
 DATASET_DIR = ROOT / "../datasets"
 SEED = 42
@@ -199,6 +208,7 @@ if __name__ == "__main__":
 | `from model.batch_interest import BatchMultiInterestModel` | `from models.m01_interest import BatchMultiInterestModel` |
 | `from model.gnn import GNNConfig, GNNModel` | `from models.m02_gnn import GNNConfig, GNNModel` |
 | `from model.ctr_mlp import CTRConfig, CTRPredictor` | `from models.m03_ctr_mlp import CTRConfig, CTRPredictor` |
+| `from model.gated_ctr import GateConfig, GatedCTRModel` | `from models.m04_gated import GateConfig, GatedCTRModel` |
 
 `ROOT` 경로 (실험 스크립트):
 
@@ -211,12 +221,16 @@ if __name__ == "__main__":
 
 ## 현재 모델 성능 (validation 기준)
 
+`m04_gated`는 2026-06-04 재실행 결과, `m03_ctr_mlp`는 2026-06-03 실험 로그 기준이다.
+MRR은 해당 평가 스크립트에서 보고한 모델만 기재했다.
+
 | 모델 | Task A F1 | Task A AUC | Task B NDCG@3 | Task B MRR |
 |------|:---------:|:----------:|:-------------:|:----------:|
+| m04 GatedCTR (5 CTR + content, F1-objective) | **0.0970** | **0.6977** | 0.0023 | — |
+| m03 CTR MLP (10d, pos+cat) | 0.0760 | 0.6691 | 0.0906 | — |
 | m01 MultiInterest (streaming) | 0.0335 | 0.5576 | 0.1445 | 0.1582 |
 | m01 Batch-KMeans | 0.0322 | 0.5695 | 0.1246 | 0.1344 |
 | m01 Batch-SVD | 0.0331 | 0.5706 | 0.0936 | 0.1086 |
 | m02 GNN | — | — | — | — |
-| m03 CTR MLP | — | — | — | — |
 | Query-only baseline | 0.0250 | 0.5375 | 0.0989 | 0.1197 |
 | HistCTR baseline | 0.0436 | — | 0.0211 | — |
