@@ -42,6 +42,12 @@ from models.m04_gated.config import GateConfig
 EPS = 1e-6
 CTR_KEYS = ("ad", "ip", "dv", "ca")   # ad_ctr, ip_ctr, dev_ctr, cat_ctr (HistCTR 별도)
 
+try:                       # content head 학습만 torch 사용(있으면). 추론은 항상 numpy.
+    import torch as _torch  # noqa: F401
+    _HAS_TORCH = True
+except ImportError:
+    _HAS_TORCH = False
+
 
 class GatedCTRModel(BaseRecoModel):
 
@@ -51,7 +57,8 @@ class GatedCTRModel(BaseRecoModel):
         self._sid2ip: dict[int, int] = {}
         self._uid2dev: dict[int, int] = {}
         self._user_protos: dict[int, np.ndarray] = {}
-        self._U = self._V = None; self._b_head = 0.0; self._scale = 10.0
+        self._U = self._V = None; self._bU = self._bV = None
+        self._b_head = 0.0; self._scale = 10.0
         self._w: np.ndarray | None = None          # F1 지수 [5 CTR, content]
         self._con_mu = self._con_sd = 0.0
         self._lo = 0.0                              # login offset log(login_boost)
@@ -78,8 +85,6 @@ class GatedCTRModel(BaseRecoModel):
             uid, sid = ev.user_id, ev.search_id
             for ad in ev.ads:
                 y = int(ad.is_click)
-                if y:
-                    self._add_proto(uid, ad.ad_emb)
                 Q.append(ev.search_emb); A.append(ad.ad_emb); Y.append(y)
                 ad_ids.append(ad.ad_id); cat_ids.append(ad.category_id); user_ids.append(uid)
                 search_ids.append(sid)
@@ -106,6 +111,8 @@ class GatedCTRModel(BaseRecoModel):
 
         # ── 3. content head: 내부-train 학습 / 내부-val AUC early-stop ──
         self._fit_head(Q[mask_tr], A[mask_tr], Y[mask_tr], Q[mask_va], A[mask_va], Y[mask_va])
+        proto_full = self._build_protos(user_ids, A, Y)
+        self._user_protos = self._build_protos(user_ids[mask_tr], A[mask_tr], Y[mask_tr])
         con = self._content_logit(Q, A, user_ids)
         self._con_mu, self._con_sd = float(con[mask_tr].mean()), float(con[mask_tr].std() + 1e-9)
         con_z = (con - self._con_mu) / self._con_sd
@@ -131,15 +138,21 @@ class GatedCTRModel(BaseRecoModel):
             ent_va = X5_va @ self._w[:5] + base_va
             ent_va_z = (ent_va - self._ent_mu) / self._ent_sd
             sup_va = self._support_vec(ad_ids[mask_va], user_ids[mask_va], cnt_tr)
-            best_f1, best_t = -1.0, float(np.median(sup_va))
-            for t in np.quantile(sup_va, np.linspace(0.05, 0.95, 19)):
-                g = _sigmoid((sup_va - t) / cfg.gate_s)
-                f1 = _best_f1_topk(g * ent_va_z + (1 - g) * con_z[mask_va], Y[mask_va])[0]
-                if f1 > best_f1:
-                    best_f1, best_t = f1, float(t)
+            if cfg.gate_t is None:
+                best_f1, best_t = -1.0, float(np.median(sup_va))
+                for t in np.quantile(sup_va, np.linspace(0.05, 0.95, 19)):
+                    g = _sigmoid((sup_va - t) / cfg.gate_s)
+                    f1 = _best_f1_topk(g * ent_va_z + (1 - g) * con_z[mask_va], Y[mask_va])[0]
+                    if f1 > best_f1:
+                        best_f1, best_t = f1, float(t)
+            else:
+                best_t = float(cfg.gate_t)
+                g = _sigmoid((sup_va - best_t) / cfg.gate_s)
+                best_f1 = _best_f1_topk(g * ent_va_z + (1 - g) * con_z[mask_va], Y[mask_va])[0]
             self._gate_t = best_t
-            print(f"[gated] gate t*={best_t:.3f} (internal-val gated F1={best_f1:.4f})")
+            print(f"[gated] gate t={best_t:.3f} (internal-val gated F1={best_f1:.4f})")
 
+        self._user_protos = proto_full
         self._fitted = True
         print(f"[gated] fit 완료  {time.time()-t0:.1f}s")
         return self
@@ -188,17 +201,19 @@ class GatedCTRModel(BaseRecoModel):
 
     def score_ad_candidates(self, user_id: int, query_emb: np.ndarray,
                             candidate_embs: np.ndarray) -> np.ndarray:
-        """Task B: content(bilinear) + interest 점수 (N,)."""
+        """Task B: raw query-ad retrieval + clicked-ad interest 점수 (N,).
+
+        클릭튜닝 content head 는 Task A click prediction 에 맞춰져 있어 전체 광고 retrieval 에서는
+        query-ad cosine 보다 불안정하다. Task B 는 검색어와 후보 광고의 원래 embedding 정렬을
+        기본 신호로 쓰고, 유저 클릭 광고 prototype 이 있으면 개인화 보너스만 더한다.
+        """
         Q = _l2_normalize(query_emb[None, :]); C = _l2_normalize(candidate_embs)
-        if not self._fitted or self._U is None:
-            return C @ Q[0]
-        uq = Q @ self._U; uq = uq / (np.linalg.norm(uq, axis=1, keepdims=True) + 1e-8)
-        vc = C @ self._V; vc = vc / (np.linalg.norm(vc, axis=1, keepdims=True) + 1e-8)
-        logit = self._scale * (vc @ uq[0]) + self._b_head
+        score = C @ Q[0]
         protos = self._user_protos.get(user_id)
-        if protos is not None and self.config.interest_beta > 0:
-            logit = logit + self.config.interest_beta * (C @ protos.T).max(axis=1)
-        return logit
+        beta = self.config.task_b_interest_beta
+        if self._fitted and protos is not None and beta > 0:
+            score = score + beta * (C @ protos.T).max(axis=1)
+        return score
 
     def predict_click(self, user_id: int, query_emb: np.ndarray, ad_emb: np.ndarray) -> int:
         return int(self.score_click(user_id, query_emb, ad_emb) > 0.5)
@@ -220,27 +235,36 @@ class GatedCTRModel(BaseRecoModel):
     # ------------------------------------------------------------------
 
     def _fit_head(self, Q, A, Y, vQ, vA, vY) -> None:
-        """logit = scale·cos(L2(Uᵀq̂), L2(Vᵀâ)) + b 를 weighted-BCE + Adam 으로 적합 (원본 bi-encoder
-        설계). 내부-val AUC early-stop."""
+        """content bi-encoder head 적합. torch 가 있으면 원본 head 로 학습(권장), 없으면 numpy fallback.
+        어느 쪽이든 학습된 가중치를 numpy(U,V,bU,bV,scale,b)로 추출해 저장 → 추론은 torch 불필요."""
+        if _HAS_TORCH:
+            return self._fit_head_torch(Q, A, Y, vQ, vA, vY)
         cfg = self.config
         rng = np.random.RandomState(cfg.seed)
         d, p, n = cfg.dim, cfg.proj_dim, len(Y)
         U = (rng.randn(d, p) / np.sqrt(d)).astype(np.float32)
         V = (rng.randn(d, p) / np.sqrt(d)).astype(np.float32)
+        bU = np.zeros(p, np.float32); bV = np.zeros(p, np.float32)   # projection bias (원본 Linear 와 동일)
         b = 0.0; scale = 10.0
         pos_w = float((Y == 0).sum() / max(1, (Y == 1).sum()))
         sw = np.where(Y > 0.5, pos_w, 1.0).astype(np.float32)
         mU = np.zeros_like(U); vU = np.zeros_like(U); mV = np.zeros_like(V); vV = np.zeros_like(V)
+        mbU = np.zeros(p); vbU = np.zeros(p); mbV = np.zeros(p); vbV = np.zeros(p)
         mb = vb = ms = vs = 0.0; b1, b2, ea, t = 0.9, 0.999, 1e-8, 0
         best_auc, best, bad = -1.0, None, 0
 
         def cos_parts(Qm, Am):
-            up = Qm @ U; vp = Am @ V
+            up = Qm @ U + bU; vp = Am @ V + bV
             nu = np.linalg.norm(up, axis=1, keepdims=True) + 1e-8
             nv = np.linalg.norm(vp, axis=1, keepdims=True) + 1e-8
             uh = up / nu; vh = vp / nv
             c = (uh * vh).sum(1)
             return up, vp, nu[:, 0], nv[:, 0], uh, vh, c
+
+        def adam(P, gP, m, v):
+            m = b1 * m + (1 - b1) * gP; v = b2 * v + (1 - b2) * (gP * gP)
+            P -= cfg.head_lr * (m / (1 - b1 ** t)) / (np.sqrt(v / (1 - b2 ** t)) + ea)
+            return P, m, v
 
         for ep in range(cfg.head_epochs):
             perm = rng.permutation(n)
@@ -250,34 +274,89 @@ class GatedCTRModel(BaseRecoModel):
                 _, _, nu, nv, uh, vh, c = cos_parts(Qb, Ab)
                 logit = scale * c + b
                 g = swb * (_sigmoid(logit) - yb)               # dL/dlogit
-                du = scale * (vh - c[:, None] * uh) / nu[:, None]   # dc/du · scale
-                dv = scale * (uh - c[:, None] * vh) / nv[:, None]
-                gU = Qb.T @ (g[:, None] * du) + cfg.head_wd * U
-                gV = Ab.T @ (g[:, None] * dv) + cfg.head_wd * V
-                gs = float((g * c).sum()); gb = float(g.sum()); t += 1
-                mU = b1 * mU + (1 - b1) * gU; vU = b2 * vU + (1 - b2) * gU * gU
-                U -= cfg.head_lr * (mU / (1 - b1 ** t)) / (np.sqrt(vU / (1 - b2 ** t)) + ea)
-                mV = b1 * mV + (1 - b1) * gV; vV = b2 * vV + (1 - b2) * gV * gV
-                V -= cfg.head_lr * (mV / (1 - b1 ** t)) / (np.sqrt(vV / (1 - b2 ** t)) + ea)
-                ms = b1 * ms + (1 - b1) * gs; vs = b2 * vs + (1 - b2) * gs * gs
+                du = (g[:, None] * scale) * (vh - c[:, None] * uh) / nu[:, None]   # dL/dup
+                dv = (g[:, None] * scale) * (uh - c[:, None] * vh) / nv[:, None]   # dL/dvp
+                t += 1
+                U, mU, vU = adam(U, Qb.T @ du + cfg.head_wd * U, mU, vU)
+                V, mV, vV = adam(V, Ab.T @ dv + cfg.head_wd * V, mV, vV)
+                bU, mbU, vbU = adam(bU, du.sum(0), mbU, vbU)
+                bV, mbV, vbV = adam(bV, dv.sum(0), mbV, vbV)
+                ms = b1 * ms + (1 - b1) * float((g * c).sum()); vs = b2 * vs + (1 - b2) * float((g * c).sum()) ** 2
                 scale -= cfg.head_lr * (ms / (1 - b1 ** t)) / (np.sqrt(vs / (1 - b2 ** t)) + ea)
-                mb = b1 * mb + (1 - b1) * gb; vb = b2 * vb + (1 - b2) * gb * gb
+                mb = b1 * mb + (1 - b1) * float(g.sum()); vb = b2 * vb + (1 - b2) * float(g.sum()) ** 2
                 b -= cfg.head_lr * (mb / (1 - b1 ** t)) / (np.sqrt(vb / (1 - b2 ** t)) + ea)
             _, _, _, _, _, _, cv = cos_parts(vQ, vA)
             auc = _binary_auc(scale * cv + b, vY)
             if auc > best_auc:
-                best_auc, best, bad = auc, (U.copy(), V.copy(), float(scale), float(b)), 0
+                best_auc, best, bad = auc, (U.copy(), V.copy(), bU.copy(), bV.copy(), float(scale), float(b)), 0
             else:
                 bad += 1
                 if bad >= cfg.head_patience:
                     break
         if best is not None:
-            U, V, scale, b = best
+            U, V, bU, bV, scale, b = best
             print(f"[gated] content head internal-val AUC={best_auc:.4f}")
-        self._U, self._V, self._scale, self._b_head = U, V, float(scale), float(b)
+        self._U, self._V, self._bU, self._bV = U, V, bU, bV
+        self._scale, self._b_head = float(scale), float(b)
+
+    def _fit_head_torch(self, Q, A, Y, vQ, vA, vY) -> None:
+        """원본 bi-encoder(Linear 384→p + L2norm + scale·cos + bias)를 torch 로 학습.
+        학습 후 가중치를 numpy(U=lsᵀ, bU=ls.bias, …)로 추출 → 추론은 순수 numpy."""
+        import torch
+        import torch.nn as nn
+        cfg = self.config
+        torch.manual_seed(cfg.seed)
+        dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        class _Head(nn.Module):
+            def __init__(s):
+                super().__init__()
+                s.ls = nn.Linear(cfg.dim, cfg.proj_dim); s.la = nn.Linear(cfg.dim, cfg.proj_dim)
+                s.scale = nn.Parameter(torch.tensor(10.0)); s.bias = nn.Parameter(torch.tensor(0.0))
+
+            def forward(s, q, a):
+                sp = nn.functional.normalize(s.ls(q), dim=1)
+                ap = nn.functional.normalize(s.la(a), dim=1)
+                return s.scale * (sp * ap).sum(1) + s.bias
+
+        m = _Head().to(dev)
+        qt = torch.as_tensor(Q, device=dev); at = torch.as_tensor(A, device=dev)
+        yt = torch.as_tensor(Y, device=dev)
+        vqt = torch.as_tensor(vQ, device=dev); vat = torch.as_tensor(vA, device=dev)
+        pos_w = torch.tensor((Y == 0).sum() / max(1, (Y == 1).sum()), device=dev)
+        lossf = nn.BCEWithLogitsLoss(pos_weight=pos_w)
+        opt = torch.optim.Adam(m.parameters(), lr=cfg.head_lr, weight_decay=cfg.head_wd)
+        n, bs = len(Y), cfg.head_batch
+        best_auc, best_state, bad = -1.0, None, 0
+        for ep in range(cfg.head_epochs):
+            m.train(); perm = torch.randperm(n, device=dev)
+            for i in range(0, n, bs):
+                idx = perm[i:i + bs]
+                opt.zero_grad()
+                lossf(m(qt[idx], at[idx]), yt[idx]).backward()
+                opt.step()
+            m.eval()
+            with torch.no_grad():
+                auc = _binary_auc(m(vqt, vat).cpu().numpy(), vY)
+            if auc > best_auc:
+                best_auc, best_state, bad = auc, {k: v.detach().clone() for k, v in m.state_dict().items()}, 0
+            else:
+                bad += 1
+                if bad >= cfg.head_patience:
+                    break
+        if best_state is not None:
+            m.load_state_dict(best_state)
+        print(f"[gated] content head (torch) internal-val AUC={best_auc:.4f}")
+        sd = m.state_dict()
+        # Linear: y = x·Wᵀ + b  →  numpy 추론은 x·U + bU 이므로 U = Wᵀ
+        self._U = sd["ls.weight"].cpu().numpy().T.astype(np.float32)
+        self._V = sd["la.weight"].cpu().numpy().T.astype(np.float32)
+        self._bU = sd["ls.bias"].cpu().numpy().astype(np.float32)
+        self._bV = sd["la.bias"].cpu().numpy().astype(np.float32)
+        self._scale = float(sd["scale"].cpu()); self._b_head = float(sd["bias"].cpu())
 
     def _content_logit(self, Q: np.ndarray, A: np.ndarray, user_ids) -> np.ndarray:
-        up = Q @ self._U; vp = A @ self._V
+        up = Q @ self._U + self._bU; vp = A @ self._V + self._bV
         uh = up / (np.linalg.norm(up, axis=1, keepdims=True) + 1e-8)
         vh = vp / (np.linalg.norm(vp, axis=1, keepdims=True) + 1e-8)
         logit = self._scale * (uh * vh).sum(1) + self._b_head
@@ -335,6 +414,17 @@ class GatedCTRModel(BaseRecoModel):
             self._user_protos[user_id] = v
         elif len(cur) < self.config.interest_cap:
             self._user_protos[user_id] = np.vstack([cur, v])
+
+    def _build_protos(self, user_ids: np.ndarray, ad_embs: np.ndarray, clicks: np.ndarray) -> dict[int, np.ndarray]:
+        protos: dict[int, np.ndarray] = {}
+        old = self._user_protos
+        self._user_protos = protos
+        for uid, emb, clicked in zip(user_ids.tolist(), ad_embs, clicks.tolist()):
+            if clicked:
+                self._add_proto(int(uid), emb)
+        out = self._user_protos
+        self._user_protos = old
+        return out
 
     def _pairs_embs(self, pairs):
         Q = _l2_normalize(np.asarray([ev.search_emb for ev, _ in pairs], dtype=np.float32))

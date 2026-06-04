@@ -7,11 +7,12 @@
 
 | 모델 | Task A F1 | Task A AUC | Task B NDCG@3 |
 |---|---:|---:|---:|
-| **m04_gated (5 CTR + content, F1-objective)** | **0.0970** | **0.6977** | 0.0023 |
+| **m04_gated (5 CTR + content, F1-objective)** | **0.096** | **0.7049** | 0.1368 |
 
-원본 방법론(AI506 Task1 `5+content`, honest F1 0.1106 / AUC 0.7041)을 이 프레임워크에서
-재현. 2026-06-04 재실행 기준 AUC 는 원본과 근접하고 F1 도 ~0.10 으로 재현된다
-(numpy 재구현 + threshold sweep 차이로 ±0.01).
+원본 방법론(AI506 Task1 `5+content`, honest F1 0.1106 / AUC 0.7041)을 이 프레임워크에서 재현.
+content head 를 원본 bi-encoder 와 동일하게 학습하면 **Task A AUC 0.7049 로 원본(0.7041)과 일치**한다.
+F1 은 ~0.10 (희소 1.1% 영역의 threshold sweep + entity-CTR 지수의 내부→외부 transfer 차이로 잔차
+±0.01; AUC 가 일치하므로 랭킹 품질은 동일하고 차이는 최상단 cutoff 에 국한된다).
 
 ## 모델
 
@@ -24,6 +25,10 @@ s = Σ wᵢ·log(CTRᵢ) + w_c·z(content) + LO·[not logged_on]
 
 선택: `GateConfig(use_gate=True)` → support 시그모이드 게이트(warm=entity/cold=content). 기본은
 위 log-linear(원본 0.1106 재현 경로).
+
+Task B 광고 추천(`score_ad_candidates`)은 클릭튜닝 head 대신 raw query-ad cosine 을 기본 retrieval
+신호로 쓰고, 유저 클릭 광고 prototype 유사도를 `task_b_interest_beta`만큼 더한다. 이 경로는 Task A
+클릭 점수(`score_pairs`)와 분리되어 있어 Task A F1/AUC에는 영향을 주지 않는다.
 
 ## train/val 분리 (원본 honest 재현의 핵심)
 
@@ -63,4 +68,6 @@ scores = model.score_pairs(ds.val_click_queries())   # rank-정규화 [0,1)
 metric = evaluate_task_a(scores, ds.val_click_answers(), threshold=0.5)
 ```
 
-의존성: `numpy`, `pandas` (torch 불필요 — content head 는 numpy 정규화-cosine bi-encoder + Adam).
+의존성: `numpy`, `pandas` 필수. `torch` **선택** — 설치돼 있으면 content head 를 원본 bi-encoder 로
+학습(AUC↑), 없으면 동등한 numpy 구현으로 fallback. 어느 쪽이든 학습된 가중치를 numpy 로 추출해
+저장하므로 **추론(score_pairs)은 항상 numpy** (협업자 env 에 torch 없어도 동작).

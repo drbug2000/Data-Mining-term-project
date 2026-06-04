@@ -61,6 +61,9 @@ def score_task_a(
     Returns:
         list[float]  — pairs와 같은 순서
     """
+    score_pairs = getattr(model, "score_pairs", None)
+    if callable(score_pairs):
+        return list(score_pairs(pairs))
     return [
         model.score_click(ev.user_id, ev.search_emb, ad.ad_emb)
         for ev, ad in pairs

@@ -76,6 +76,9 @@ class GateConfig:
     interest_beta: float = 0.5
     """content path 에 더해지는 interest(클릭 이력) 유사도 가중치. 클릭 이력 없는 유저는 0."""
 
+    task_b_interest_beta: float = 0.5
+    """Task B 광고 추천에서 raw query-ad cosine 에 더하는 클릭 광고 interest 유사도 가중치."""
+
     # ------------------------------------------------------------------
     # Support gate — warm(entity) vs cold(content) 자동 전환
     # ------------------------------------------------------------------
