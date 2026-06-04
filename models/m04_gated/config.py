@@ -35,8 +35,8 @@ class GateConfig:
     # Content head 학습 (low-rank bilinear, numpy + Adam)
     # ------------------------------------------------------------------
 
-    head_epochs: int = 30
-    """content head 최대 epoch 수 (early stopping 이 보통 먼저 멈춘다)."""
+    head_epochs: int = 60
+    """content head 최대 epoch 수 (early stopping 이 보통 먼저 멈춘다). 원본 bi-encoder 와 동일."""
 
     head_batch: int = 8192
     """content head 미니배치 크기."""
@@ -47,8 +47,8 @@ class GateConfig:
     head_wd: float = 1e-3
     """content head weight decay (U, V 행렬에만 적용)."""
 
-    head_patience: int = 5
-    """content head early stopping patience (내부 val AUC 기준)."""
+    head_patience: int = 8
+    """content head early stopping patience (내부 val AUC 기준). 원본 bi-encoder 와 동일."""
 
     # ------------------------------------------------------------------
     # Entity (CTR) path — logistic regression over trusted log-CTRs
