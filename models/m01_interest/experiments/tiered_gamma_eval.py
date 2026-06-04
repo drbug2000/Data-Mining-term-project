@@ -12,12 +12,12 @@ import sys, time
 from pathlib import Path
 import numpy as np
 
-ROOT = Path(__file__).parent.parent
+ROOT = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
-from data.dataset import RecoDataset
-from model import ModelConfig, MultiInterestModel
-from model.predictor import evaluate_task_b_ndcg, score_task_b, train
+from shared.data.dataset import RecoDataset
+from models.m01_interest import ModelConfig, MultiInterestModel
+from shared.eval.predictor import evaluate_task_b_ndcg, score_task_b, train
 
 DATASET_DIR = ROOT / "../datasets"
 SEED = 42

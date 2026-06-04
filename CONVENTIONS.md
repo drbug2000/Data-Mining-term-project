@@ -9,30 +9,49 @@
 
 ```
 project-root/
-├── model/          # 모델 구현 (BaseRecoModel 상속 클래스들)
-│   ├── base.py         추상 인터페이스 (수정 자제)
-│   ├── config.py       하이퍼파라미터 dataclass
-│   ├── interest.py     MultiInterestModel (스트리밍 방식)
-│   ├── batch_interest.py BatchMultiInterestModel (배치 방식)
-│   ├── gnn.py          GNNModel
-│   ├── ctr_mlp.py      CTRPredictor
-│   ├── predictor.py    공통 학습·평가 함수 (train / score / evaluate)
-│   └── __init__.py     공개 API 선언
-├── data/           # 데이터 로딩 (git 제외)
-│   ├── dataset.py      RecoDataset
-│   └── graph.py        그래프 구축
-├── experiments/    # 실험 스크립트 (모델 코드 포함 금지)
-├── clustering_results/ # 시각화 결과 PNG
-├── PLAN.md         설계 문서
-├── REPORT.md       실험 보고서
-├── EXPERIMENT_LOG.md 실험 이력
-└── CONVENTIONS.md  이 파일
+│
+├── shared/                     # 공유 파이프라인 (고정 — 직접 수정 자제)
+│   ├── base.py                 #   BaseRecoModel 추상 인터페이스
+│   ├── data/                   #   앞단: 데이터 로딩
+│   │   ├── dataset.py          #     RecoDataset
+│   │   └── graph.py            #     HeteroGraph, build_graph
+│   └── eval/                   #   뒷단: 성능 측정
+│       └── predictor.py        #     train / score_* / evaluate_* / predict_*
+│
+├── models/                     # 독립 모델 디렉토리 (각자 개발)
+│   ├── m01_interest/           #   Text Embedding Interest Model
+│   │   ├── config.py           #     ModelConfig
+│   │   ├── interest.py         #     MultiInterestModel
+│   │   ├── batch_interest.py   #     BatchMultiInterestModel
+│   │   └── experiments/        #     모델 전용 실험 스크립트
+│   ├── m02_gnn/                #   Graph Neural Network Model
+│   │   ├── gnn.py              #     GNNConfig, GNNModel
+│   │   └── experiments/
+│   └── m03_ctr_mlp/            #   CTR MLP (GNN + 통계 피처)
+│       ├── ctr_mlp.py          #     CTRConfig, CTRPredictor
+│       └── experiments/
+│
+├── analysis/                   # 데이터·임베딩 범용 분석 (모델 독립)
+├── clustering_results/         # 시각화 결과 PNG
+├── README.md           빠른 시작 가이드 & 구조 설명
+├── PLAN.md             설계 문서
+├── REPORT.md           실험 보고서
+├── EXPERIMENT_LOG.md   실험 이력
+└── CONVENTIONS.md      이 파일
 ```
 
-### 원칙
-- **`model/`** 은 데이터 로딩·실험 로직 없이 순수 모델 코드만 포함한다.
-- **`experiments/`** 스크립트는 모델을 import해서 사용할 뿐, 직접 구현하지 않는다.
-- **`data/`** 는 `.gitignore`에 포함 — 대용량 `.npy` / `.csv` 파일 포함.
+### 핵심 원칙
+
+```
+[shared/data/]  →  [models/mXX/]  →  [shared/eval/]
+  데이터 로딩        모델 로직          성능 측정
+  (공유, 고정)      (독립 개발)        (공유, 고정)
+```
+
+- **`shared/`** 는 모든 모델이 공유하는 데이터 로딩과 평가 파이프라인. 수정 시 전체 영향.
+- **`models/mXX/`** 는 완전히 독립적으로 개발. 다른 모델의 코드를 건드리지 않는다.
+- **`analysis/`** 는 특정 모델에 종속되지 않는 데이터 분석 스크립트.
+- **`datasets/`** (프로젝트 루트 한 단계 위) 는 `.gitignore` 처리 — 대용량 원본 파일.
 
 ---
 
@@ -622,12 +641,14 @@ import time
 from pathlib import Path
 import numpy as np
 
-ROOT = Path(__file__).parent.parent      # 프로젝트 루트 (항상 이 방식)
+ROOT = Path(__file__).parent.parent.parent.parent  # 프로젝트 루트
+                                                   # (models/mXX/experiments/ 기준)
 sys.path.insert(0, str(ROOT))
 
-from data.dataset import RecoDataset
-from model import ModelConfig, MultiInterestModel
-from model.predictor import train, score_task_a, score_task_b, evaluate_task_a, evaluate_task_b_ndcg
+from shared.data.dataset import RecoDataset
+from shared.eval.predictor import train, score_task_a, score_task_b
+from shared.eval.predictor import evaluate_task_a, evaluate_task_b_ndcg
+from models.m01_interest import ModelConfig, MultiInterestModel
 
 DATASET_DIR = ROOT / "../datasets"       # 데이터셋 경로 (항상 이 위치)
 SEED = 42                                # 재현성을 위한 고정 시드

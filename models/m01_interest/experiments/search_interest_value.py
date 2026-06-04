@@ -20,12 +20,12 @@ from pathlib import Path
 
 import numpy as np
 
-ROOT = Path(__file__).parent.parent
+ROOT = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
-from data.dataset import RecoDataset
-from model import ModelConfig, MultiInterestModel
-from model.predictor import train
+from shared.data.dataset import RecoDataset
+from models.m01_interest import ModelConfig, MultiInterestModel
+from shared.eval.predictor import train
 
 DATASET_DIR = ROOT / "../datasets"
 SEED = 42
@@ -45,7 +45,7 @@ def score_with_gamma_rule(
     user_click_cnt: dict,
 ) -> dict[int, np.ndarray]:
     """gamma_rule에 따라 effective_gamma를 직접 제어해 스코어를 계산한다."""
-    from model.interest import _l2_normalize
+    from models.m01_interest.interest import _l2_normalize
 
     C = _l2_normalize(candidate_embs)          # (N, dim)
     scores_dict = {}

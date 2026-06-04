@@ -52,7 +52,7 @@ from typing import Callable
 
 import numpy as np
 
-from data.graph import HeteroGraph
+from shared.data.graph import HeteroGraph
 
 
 # ─────────────────────────────────────────────────────────────────────────────

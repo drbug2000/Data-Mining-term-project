@@ -20,12 +20,12 @@ from collections import defaultdict
 
 import numpy as np
 
-ROOT = Path(__file__).parent.parent
+ROOT = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
-from data.dataset import RecoDataset
-from model import ModelConfig, MultiInterestModel
-from model.predictor import score_task_b, score_task_a, train
+from shared.data.dataset import RecoDataset
+from models.m01_interest import ModelConfig, MultiInterestModel
+from shared.eval.predictor import score_task_b, score_task_a, train
 
 DATASET_DIR = ROOT / "../datasets"
 SEED = 42

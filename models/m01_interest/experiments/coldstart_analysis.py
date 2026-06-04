@@ -20,12 +20,12 @@ from pathlib import Path
 
 import numpy as np
 
-ROOT = Path(__file__).parent.parent
+ROOT = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
-from data.dataset import RecoDataset
-from model import ModelConfig, MultiInterestModel
-from model.predictor import score_task_b, train
+from shared.data.dataset import RecoDataset
+from models.m01_interest import ModelConfig, MultiInterestModel
+from shared.eval.predictor import score_task_b, train
 
 DATASET_DIR = ROOT / "../datasets"
 SEED = 42
@@ -198,7 +198,7 @@ def main() -> None:
 
     # ── Query-only (gamma=0) 비교 ─────────────────────────────────────
     section("5. MultiInterest vs Query-only — 그룹별 비교")
-    from model import MultiInterestModel as MIM
+    from models.m01_interest import MultiInterestModel as MIM
     model_qonly = MIM(ModelConfig(k=5, alpha_search=0.01, alpha_click=0.5,
                                   gamma=0.0))
     train(model_qonly, ds.training_stream())

@@ -19,7 +19,7 @@ from sklearn.metrics import (normalized_mutual_info_score,
 from sklearn.preprocessing import normalize
 
 DATASET_DIR = Path(r"D:\lecture\2026_1_1-1\data mining and search\term project\datasets")
-OUT_DIR = Path(__file__).parent.parent / "clustering_results"
+OUT_DIR = Path(__file__).parent.parent.parent / "clustering_results"
 OUT_DIR.mkdir(exist_ok=True)
 RANDOM_SEED = 42
 BEST_K = 15

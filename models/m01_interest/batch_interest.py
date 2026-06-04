@@ -38,8 +38,8 @@ from collections import defaultdict
 
 import numpy as np
 
-from model.config import ModelConfig
-from model.interest import MultiInterestModel, _l2_normalize
+from models.m01_interest.config import ModelConfig
+from models.m01_interest.interest import MultiInterestModel, _l2_normalize
 
 
 class BatchMultiInterestModel(MultiInterestModel):

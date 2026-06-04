@@ -1,8 +1,8 @@
 """
 BaseRecoModel — 모든 추천 모델이 구현해야 하는 인터페이스.
 
-실험 코드(experiments/)와 데이터 파이프라인(data/)은
-이 파일만 바라보면 된다. 구체적인 모델 구현(model/interest.py 등)은
+shared/eval/ 과 각 models/mXX/experiments/ 는
+이 파일만 바라보면 된다. 구체적인 모델 구현(models/mXX/*.py)은
 이 인터페이스를 상속해서 작성한다.
 
 ┌─────────────────────────────────────────────┐
@@ -20,17 +20,15 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 
-from model.config import ModelConfig
-
-
 class BaseRecoModel(ABC):
     """추천 모델 인터페이스.
 
-    구현 클래스는 __init__(self, config: ModelConfig) 를 정의하고
+    구현 클래스는 __init__(self, config) 를 정의하고
     아래 4개의 abstractmethod를 모두 구현해야 한다.
+    config 타입은 각 모델 디렉토리의 XxxConfig dataclass를 사용한다.
     """
 
-    def __init__(self, config: ModelConfig):
+    def __init__(self, config):
         self.config = config
 
     # ------------------------------------------------------------------

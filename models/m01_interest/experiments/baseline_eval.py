@@ -17,12 +17,12 @@ from pathlib import Path
 
 import numpy as np
 
-ROOT = Path(__file__).parent.parent
+ROOT = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
-from data.dataset import RecoDataset
-from model import ModelConfig, MultiInterestModel
-from model.predictor import (
+from shared.data.dataset import RecoDataset
+from models.m01_interest import ModelConfig, MultiInterestModel
+from shared.eval.predictor import (
     evaluate_task_a,
     evaluate_task_b_ndcg,
     score_task_a,

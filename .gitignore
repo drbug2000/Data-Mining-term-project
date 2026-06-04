@@ -1,8 +1,10 @@
 # 과제 원본 PDF (배포 제한)
 S26_AI506_Project.pdf
 
-# 데이터셋 디렉토리 (용량 대형 파일)
-data/
+# 실제 데이터셋 파일 (용량 대형 — 별도 배포)
+datasets/
+data/*.csv
+data/*.npy
 
 # Python 캐시
 __pycache__/

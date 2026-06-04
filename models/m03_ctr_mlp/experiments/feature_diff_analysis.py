@@ -9,19 +9,20 @@ import sys, numpy as np
 from pathlib import Path
 from collections import defaultdict
 
-ROOT = Path(__file__).parent.parent
+ROOT = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
-from data.dataset import RecoDataset
-from data.graph import build_graph
-from model.gnn import GNNConfig, GNNModel
-from model.ctr_mlp import CTRConfig, CTRPredictor, _unit
+from shared.data.dataset import RecoDataset
+from shared.data.graph import build_graph
+from models.m02_gnn import GNNConfig, GNNModel
+from models.m03_ctr_mlp import CTRConfig, CTRPredictor, _unit
 
 DATASET_DIR = ROOT / "../datasets"
 SEED = 42
 
 FEAT_NAMES = [
-    "sim_sa", "log_pos", "inv_pos", "is_top1", "hist_ctr",
+    "sim_sa_gnn", "sim_sa_raw",
+    "log_pos", "inv_pos", "is_top1", "hist_ctr",
     "cat_match", "search_cat_id", "ad_cat_id", "log_price", "is_logged_on",
 ]
 
@@ -110,16 +111,25 @@ def run_experiment(ds, graph, val_pairs, val_ans, labels,
         f1, thr, prec, rec = best_f1_metrics(sc, lb)
         auc = binary_auc(sc, lb)
 
-        # sim_sa gap
+        # sim_sa_gnn gap (index 0)
         sa  = X[:, 0]; lba = np.array(lb, dtype=float)
         mc  = sa[lba == 1].mean() if pos > 0 else float("nan")
         mn  = sa[lba == 0].mean()
         gap = mc - mn if pos > 0 else float("nan")
 
+        # sim_sa_raw gap (index 1, 있으면)
+        if X.shape[1] > 1:
+            sa_r = X[:, 1]
+            mc_r = sa_r[lba == 1].mean() if pos > 0 else float("nan")
+            mn_r = sa_r[lba == 0].mean()
+            gap_raw = mc_r - mn_r if pos > 0 else float("nan")
+        else:
+            gap_raw = float("nan")
+
         out[gk] = {
             "n": n, "pos": pos,
             "f1": f1, "thr": thr, "prec": prec, "rec": rec, "auc": auc,
-            "sim_sa_click": mc, "sim_sa_noclk": mn, "sim_sa_gap": gap,
+            "sim_sa_gap": gap, "sim_sa_raw_gap": gap_raw,
             "drift_mean": np.mean(drift_g[gk]) if drift_g[gk] else float("nan"),
         }
 
@@ -131,7 +141,8 @@ def run_experiment(ds, graph, val_pairs, val_ans, labels,
         "n": len(all_lb), "pos": sum(all_lb),
         "f1": f1_all, "thr": thr_all, "prec": prec_all, "rec": rec_all,
         "auc": binary_auc(all_sc, all_lb),
-        "sim_sa_gap": float("nan"), "drift_mean": float("nan"),
+        "sim_sa_gap": float("nan"), "sim_sa_raw_gap": float("nan"),
+        "drift_mean": float("nan"),
     }
     return out
 
@@ -148,7 +159,7 @@ def main():
             if ad.is_click: train_click_users.add(ev.user_id)
 
     graph     = build_graph(ds, verbose=False, transductive=True,
-                            include_test=True, top_k_sim=0)
+                            include_test=True, top_k_sim=5)
     val_pairs = ds.val_click_queries()
     val_ans   = ds.val_click_answers()
     labels    = val_ans["IsClick"].tolist()[:len(val_pairs)]
@@ -158,54 +169,41 @@ def main():
 
     # ── 실험 실행 ──────────────────────────────────────────────────────
     results = {}
-    for nl in [2, 4]:
+    for nl in [2]:
         print(f"\n[2] n_layers={nl} 실행...")
         results[nl] = run_experiment(ds, graph, val_pairs, val_ans, labels,
                                      train_users, train_click_users, nl)
 
     # ── 결과 테이블 ────────────────────────────────────────────────────
-    sep("그룹별 F1 / AUC / sim_sa Gap 비교 (L=2 vs L=4)")
+    sep("그룹별 F1 / AUC / sim_sa Gap  (11d: sim_sa_gnn + sim_sa_raw)")
 
-    keys = ["U0", "U1", "U2", "ALL"]
-    col  = 18
+    def fmt(v): return f"{v:.4f}" if v == v else "   nan"
 
-    # 헤더
-    print(f"\n  {'그룹':<26}  {'--- L=2 ---':^44}  {'--- L=4 ---':^44}")
-    print(f"  {'':26}  "
-          f"{'F1':>7} {'AUC':>7} {'Prec':>7} {'Rec':>7} {'Gap':>8}  "
-          f"{'F1':>7} {'AUC':>7} {'Prec':>7} {'Rec':>7} {'Gap':>8}")
-    print("  " + "─" * 115)
+    print(f"\n  {'그룹':<26}  {'n':>5}  {'F1':>7} {'AUC':>7} {'Prec':>7} {'Rec':>7}  "
+          f"{'Gap_gnn':>8} {'Gap_raw':>8} {'drift':>7}")
+    print("  " + "─" * 92)
 
-    for gk in keys:
+    r = results[2]
+    for gk in ["U0", "U1", "U2", "ALL"]:
+        d = r[gk]
         label = GROUP_LABEL.get(gk, "전체")
-        r2, r4 = results[2][gk], results[4][gk]
-        n, pos = r2["n"], r2["pos"]
-
-        def fmt(v): return f"{v:.4f}" if not (v != v) else "  nan "
-
-        # F1이 개선된 경우 표시
-        mark2 = ""
-        mark4 = " ◀" if r4["f1"] > r2["f1"] else ""
-
-        print(f"  {label:<26}  "
-              f"{fmt(r2['f1']):>7} {fmt(r2['auc']):>7} "
-              f"{fmt(r2['prec']):>7} {fmt(r2['rec']):>7} {fmt(r2['sim_sa_gap']):>8}  "
-              f"{fmt(r4['f1']):>7} {fmt(r4['auc']):>7} "
-              f"{fmt(r4['prec']):>7} {fmt(r4['rec']):>7} {fmt(r4['sim_sa_gap']):>8}"
-              f"{mark4}")
-
+        gap_gnn = d.get('sim_sa_gap', float("nan"))
+        gap_raw = d.get('sim_sa_raw_gap', float("nan"))
+        drift   = d.get('drift_mean', float("nan"))
+        print(f"  {label:<26}  {d['n']:>5,}  "
+              f"{fmt(d['f1']):>7} {fmt(d['auc']):>7} "
+              f"{fmt(d['prec']):>7} {fmt(d['rec']):>7}  "
+              f"{fmt(gap_gnn):>8} {fmt(gap_raw):>8} {fmt(drift):>7}")
         if gk == "U2":
-            print("  " + "─" * 115)
+            print("  " + "─" * 92)
 
-    # ── sim_sa drift 비교 ──────────────────────────────────────────────
-    sep("h_search drift (원본 text emb에서 변형 정도)")
-    print(f"\n  {'그룹':<26}  {'L=2 drift':>12}  {'L=4 drift':>12}  {'변화':>8}")
-    print("  " + "─" * 64)
+    # ── sim_sa drift ──────────────────────────────────────────────────
+    sep("h_search drift (원본 text emb에서 변형 정도, L=2)")
+    print(f"\n  {'그룹':<26}  {'drift mean':>12}  {'drift std':>10}")
+    print("  " + "─" * 52)
     for gk in ["U0", "U1", "U2"]:
-        d2 = results[2][gk]["drift_mean"]
-        d4 = results[4][gk]["drift_mean"]
-        delta = d4 - d2 if not (d2 != d2 or d4 != d4) else float("nan")
-        print(f"  {GROUP_LABEL[gk]:<26}  {d2:>12.4f}  {d4:>12.4f}  {delta:>+8.4f}")
+        d = results[2][gk]["drift_mean"]
+        print(f"  {GROUP_LABEL[gk]:<26}  {d:>12.4f}")
 
     print("""
   drift = 1 - cosine(h_search_raw, h_search_gnn)

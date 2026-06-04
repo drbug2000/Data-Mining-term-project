@@ -18,13 +18,13 @@ from pathlib import Path
 
 import numpy as np
 
-ROOT = Path(__file__).parent.parent
+ROOT = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
-from data.dataset import RecoDataset
-from data.graph import build_graph
-from model.gnn import GNNConfig, GNNModel
-from model.ctr_mlp import CTRConfig, CTRPredictor
+from shared.data.dataset import RecoDataset
+from shared.data.graph import build_graph
+from models.m02_gnn import GNNConfig, GNNModel
+from models.m03_ctr_mlp import CTRConfig, CTRPredictor
 
 DATASET_DIR = ROOT / "../datasets"
 SEED = 42
@@ -107,7 +107,7 @@ def main():
         ai = g._ad_id_to_idx.get(ad.ad_id)
         if si is None or ai is None:
             return None
-        from model.ctr_mlp import _unit
+        from models.m03_ctr_mlp import _unit
         h_s = _unit(g._search_repr[si])
         h_a = _unit(g._ad_feat[ai])
         ui  = g._user_id_to_idx.get(ev.user_id)

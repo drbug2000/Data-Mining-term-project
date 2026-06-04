@@ -30,7 +30,7 @@ from typing import Iterator
 
 import numpy as np
 
-from model.base import BaseRecoModel
+from shared.base import BaseRecoModel
 
 
 # ──────────────────────────────────────────────

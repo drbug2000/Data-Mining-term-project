@@ -30,7 +30,7 @@ from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import normalize
 
 DATASET_DIR = Path(r"D:\lecture\2026_1_1-1\data mining and search\term project\datasets")
-OUT_DIR = Path(__file__).parent.parent / "clustering_results"
+OUT_DIR = Path(__file__).parent.parent.parent / "clustering_results"
 OUT_DIR.mkdir(exist_ok=True)
 
 SEARCH_SAMPLE = 15_000   # sample size for search embeddings (full 276K too slow for t-SNE)

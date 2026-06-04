@@ -333,18 +333,16 @@ class CTRPredictor:
         search_cat_id = float(ev.category_id)
         ad_cat_id     = float(ad.category_id)
 
-        # ── 광고 속성 (2) + 유저 그룹 플래그 (1) ─────────────────────────
-        log_price     = float(np.log1p(ad.price))
-        is_logged_on  = float(ev.is_logged_on)
-        is_click_user = float(ev.user_id in g._clicked_users)  # 클릭 이력 유저
+        # ── 광고 속성 (2) ─────────────────────────────────────────────────
+        log_price    = float(np.log1p(ad.price))
+        is_logged_on = float(ev.is_logged_on)
 
         return np.array([
             sim_sa_gnn, sim_sa_raw,
             log_pos, inv_pos, is_top1, hist_ctr,
             cat_match, search_cat_id, ad_cat_id,
             log_price, is_logged_on,
-            is_click_user,
-        ], dtype=np.float32)  # (12,)
+        ], dtype=np.float32)  # (11,)
 
 
 # ── 모듈 유틸 ──────────────────────────────────────────────────────────────

@@ -27,8 +27,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from model.base import BaseRecoModel
-from model.config import ModelConfig
+from shared.base import BaseRecoModel
+from models.m01_interest.config import ModelConfig
 
 
 class MultiInterestModel(BaseRecoModel):

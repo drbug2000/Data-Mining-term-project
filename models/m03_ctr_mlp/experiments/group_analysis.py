@@ -13,13 +13,13 @@ import sys, numpy as np
 from pathlib import Path
 from collections import defaultdict
 
-ROOT = Path(__file__).parent.parent
+ROOT = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
-from data.dataset import RecoDataset
-from data.graph import build_graph
-from model.gnn import GNNConfig, GNNModel
-from model.ctr_mlp import CTRConfig, CTRPredictor
+from shared.data.dataset import RecoDataset
+from shared.data.graph import build_graph
+from models.m02_gnn import GNNConfig, GNNModel
+from models.m03_ctr_mlp import CTRConfig, CTRPredictor
 
 DATASET_DIR = ROOT / "../datasets"
 SEED = 42
