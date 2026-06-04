@@ -1,0 +1,3 @@
+"D:\lecture\2026_1_1-1\data mining and search\term project\datasets"
+or
+"../datasets"

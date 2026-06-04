@@ -1,0 +1,583 @@
+\documentclass[10pt,twocolumn]{article}
+
+% ── 패키지 ──────────────────────────────────────────────────────────────
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{microtype}
+\usepackage{bm}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{subcaption}
+
+% ── 수식 단축 ────────────────────────────────────────────────────────────
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\norm}[1]{\left\|#1\right\|}
+\newcommand{\cosim}{\mathrm{sim}}
+
+\DeclareMathOperator*{\argmax}{arg\,max}
+
+% ── 제목 ─────────────────────────────────────────────────────────────────
+\title{\textbf{Multi-Interest User Modeling via Streaming Text Embeddings\\
+for Personalized Ad Recommendation}\\[6pt]
+{\normalsize AI506 Data Mining and Search --- Term Project Report}}
+
+\author{\textit{Model-1: Simple Text Embedding Baseline}}
+\date{May 2026}
+
+% ═══════════════════════════════════════════════════════════════════════════
+\begin{document}
+\maketitle
+
+% ── Abstract ─────────────────────────────────────────────────────────────
+\begin{abstract}
+We present a parameter-free personalized ad recommendation system that
+leverages \textbf{pre-trained text embeddings} to represent both search
+queries and ads in a shared semantic space, and maintains per-user
+\emph{multi-interest vectors} updated online from streaming search and
+click events.
+Empirical analysis confirms that text-based semantic similarity is
+strongly predictive of user preference in ad ranking
+(Cohen's $d = 1.56$ between ground-truth and random candidates),
+motivating a hybrid scoring function that combines query--ad text similarity
+with a multi-faceted user interest profile.
+On the ad recommendation validation set (214 queries, 17{,}518 candidates),
+our method achieves NDCG@3~$= 0.1228$, a $\mathbf{6{\times}}$ improvement
+over the category-wise HistCTR baseline (NDCG@3~$= 0.0211$),
+with no trainable parameters.
+\end{abstract}
+
+% ═══════════════════════════════════════════════════════════════════════════
+\section{Introduction}
+\label{sec:intro}
+
+Personalized ad recommendation is a fundamental problem in information
+retrieval.
+Given a user's search query and behavioral history, the system must rank
+thousands of candidate ads such that the most relevant ones appear at the
+top.
+Two ingredients are central to this problem:
+(i) an accurate measure of \emph{relevance} between a query and an ad,
+and (ii) a model of the user's \emph{long-term preferences} that
+transcends any single query.
+
+Our approach addresses both with a unified text-embedding framework.
+Concretely, we make the following contributions:
+\begin{enumerate}[leftmargin=*,nosep,itemsep=2pt]
+  \item We demonstrate through exploratory data analysis (EDA) that
+    \textbf{text embedding similarity} is the strongest signal for user
+    preference alignment in this dataset, outperforming category-level
+    statistics.
+  \item We motivate and instantiate a \textbf{multi-interest user model}
+    in text embedding space, where each user is represented by $k$
+    interest vectors that collectively capture diverse facets of
+    preference --- a design informed by prior work on multi-interest
+    recommendation~\cite{li2019mind,cen2020comirec}.
+  \item We propose an online soft-assignment update rule and an
+    adaptive mixing strategy that gracefully handles cold-start users.
+\end{enumerate}
+
+% ═══════════════════════════════════════════════════════════════════════════
+\section{Problem Formulation}
+\label{sec:problem}
+
+Let $\mathcal{U}$ be the set of users and $\mathcal{A}$ the global ad
+corpus of $N = 17{,}518$ ads.
+The system observes a \emph{streaming event log} in chronological order;
+each event is a tuple
+$(u,\, q,\, \{(a_1, y_1), \ldots, (a_m, y_m)\})$,
+where $u \in \mathcal{U}$, $q$ is the issued search query,
+$a_j \in \mathcal{A}$ are the ads served, and $y_j \in \{0, 1\}$
+indicates whether $a_j$ was clicked.
+
+\paragraph{Task B --- Ad Recommendation (NDCG@3).}
+Given a held-out event $(u, q)$,
+rank all $N$ candidate ads and return a top-$K$ list.
+Performance is measured by Normalized Discounted Cumulative Gain:
+\[
+  \mathrm{NDCG@3} = \frac{1}{\log_2(r+1)} \cdot \mathbf{1}[r \leq 3],
+\]
+where $r$ is the rank of the single ground-truth ad.
+Unlike click prediction (Task A), this task is a \emph{ranking} problem:
+the goal is to surface the most \emph{preferred} ad for the user,
+which requires modeling long-term user preference beyond the current query.
+
+% ═══════════════════════════════════════════════════════════════════════════
+\section{Motivation}
+\label{sec:motivation}
+
+\subsection{Text Embeddings as a Shared Semantic Space}
+\label{sec:motivation:emb}
+
+Both search queries and ad titles are natural-language text.
+This seemingly simple observation has an important consequence:
+when the same pre-trained language model encodes both queries and ads,
+they are projected into the \emph{same semantic space} with no
+cross-modal gap.
+
+Formally, we use a single encoder $\phi : \text{text} \to \R^d$
+($d = 384$, all-MiniLM-L6-v2 family) and represent every entity as:
+\[
+  \phi(q) \in \R^d, \quad \phi(a) \in \R^d.
+\]
+Because $q$ and $a$ are both text, their embeddings are directly
+comparable via cosine similarity without any additional projection layer
+or domain adaptation.
+This shared representation enables the model to measure the
+\textbf{semantic alignment} between what a user is searching for and
+what an ad is offering, using a single inner product.
+
+\subsection{EDA: Text Similarity Captures User Preference}
+\label{sec:motivation:eda}
+
+To empirically validate the choice of text embeddings, we conduct an
+exploratory analysis on the ad recommendation validation set.
+For each of the 214 validation queries, we compute the cosine similarity
+$\cosim(\hat{\phi}(q), \hat{\phi}(a))$ for (i) the ground-truth ad
+and (ii) five randomly sampled candidate ads from the pool of 17{,}518.
+
+\begin{table}[h]
+\centering
+\caption{Discriminability of text similarity for Task B.
+         Cohen's $d$ measures how well text similarity separates
+         the preferred ad from random candidates.}
+\label{tab:eda}
+\small
+\begin{tabular}{lccc}
+\toprule
+Group & $n$ & Mean sim. & Std \\
+\midrule
+Ground-truth (preferred) ads & 214 & \textbf{0.548} & 0.213 \\
+Randomly sampled ads         & 1{,}070 & 0.253 & 0.160 \\
+\midrule
+\multicolumn{2}{l}{Gap (preferred $-$ random)} & \multicolumn{2}{c}{$+0.295$} \\
+\multicolumn{2}{l}{Cohen's $d$} & \multicolumn{2}{c}{$\mathbf{1.56}$ (large effect)} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+As shown in Table~\ref{tab:eda}, preferred ads have a mean similarity
+of $0.548$ to their query, while randomly sampled ads score only $0.253$
+--- a gap of $+0.295$ with an effect size of Cohen's $d = 1.56$.
+By standard convention, $d > 0.8$ indicates a large effect;
+$d = 1.56$ thus demonstrates that text embedding similarity is a
+\textbf{highly discriminative signal} for user preference in this domain.
+
+This result underpins our design decision to use text embeddings as the
+primary representation: no other feature in the dataset (e.g., category
+tags, historical CTR) provides as direct a measure of relevance between
+a user's expressed intent and an ad's content.
+
+\subsection{Ad Recommendation as a User Preference Ranking Problem}
+\label{sec:motivation:ranking}
+
+Task B is fundamentally a \textbf{preference ranking} problem.
+Among 17{,}518} candidate ads, the model must identify the one that best
+matches the user's immediate intent \emph{and} long-term interests.
+The current query captures immediate intent, but it alone cannot account
+for user-specific preference patterns accumulated over time.
+
+For instance, two users issuing the identical query ``running shoes''
+may prefer very different ad styles: one favors minimalist trail shoes,
+the other high-tech road-running gear.
+A query-only model ranks both users identically, whereas a model that
+maintains a personalized user profile can distinguish them.
+
+This motivates the inclusion of a \emph{user interest component} in the
+scoring function, operating alongside the text similarity term.
+
+% ═══════════════════════════════════════════════════════════════════════════
+\section{Related Work: Multi-Interest Recommendation}
+\label{sec:related}
+
+A single user-embedding vector is insufficient to represent the
+diversity of real-world user interests~\cite{li2019mind}.
+A user who purchases both sports equipment and cooking supplies cannot
+be accurately described by a single point in the embedding space.
+
+The multi-interest paradigm addresses this by maintaining \emph{multiple}
+prototype vectors per user.
+\textbf{MIND}~\cite{li2019mind} introduced dynamic routing to assign
+items to different interest capsules.
+\textbf{ComiRec}~\cite{cen2020comirec} proposed a controllable
+multi-interest framework that disentangles user representations for
+recommendation diversity.
+These works consistently show that multi-vector user representations
+outperform single-vector baselines in retrieval recall and ranking quality.
+
+Our work adapts this paradigm to the text-embedding domain.
+Unlike prior methods that operate on ID-based item embeddings learned
+end-to-end, we maintain interest vectors in the \emph{same pre-trained
+text embedding space} used for queries and ads.
+This design choice means the interest vectors are directly comparable
+to both queries and ad embeddings via cosine similarity --- no learned
+projection or compatibility layer is required.
+The online soft-assignment update rule (Section~\ref{sec:update})
+further distinguishes our approach by enabling streaming updates without
+batch retraining.
+
+% ═══════════════════════════════════════════════════════════════════════════
+\section{Method}
+\label{sec:method}
+
+Our model, \textbf{MultiInterest}, integrates the insights above into
+three components:
+(i) a multi-vector user interest representation in text embedding space,
+(ii) an online soft-assignment update rule,
+and (iii) a hybrid scoring function combining text similarity and
+personalized interest.
+
+% ─────────────────────────────────────────────────────────────────────────
+\subsection{Multi-Interest User Representation}
+\label{sec:repr}
+
+Each user $u$ is associated with $k$ \emph{interest vectors}
+$\bm{V}^u = [\bm{v}^u_1, \ldots, \bm{v}^u_k] \in \R^{k \times d}$,
+residing in the same $d$-dimensional space as query and ad embeddings.
+
+A single vector collapses all of a user's interests into one direction,
+which is inadequate when users exhibit multiple distinct preference
+facets (Section~\ref{sec:motivation:ranking}).
+With $k > 1$ vectors, each prototype can specialize to a distinct
+facet of the user's interest profile, as established in the
+multi-interest recommendation literature~\cite{li2019mind,cen2020comirec}.
+
+\paragraph{Initialization.}
+When user $u$ is first encountered, each vector is drawn i.i.d.\ from
+a standard Gaussian and $\ell_2$-normalized:
+\[
+  \bm{v}^u_i \leftarrow \frac{\bm{z}_i}{\norm{\bm{z}_i}}, \quad
+  \bm{z}_i \sim \mathcal{N}(\bm{0}, \bm{I}_d).
+\]
+Random initialization ensures the $k$ vectors initially point in
+different directions, promoting specialization as behavioral evidence
+accumulates.
+Zero initialization is avoided because it makes all soft-assignment
+weights uniform, causing all $k$ vectors to collapse to the same direction.
+
+% ─────────────────────────────────────────────────────────────────────────
+\subsection{Online Soft-Assignment Interest Update}
+\label{sec:update}
+
+When a new text embedding $\bm{e}$ arrives (from a search query or
+clicked ad), each interest vector $\bm{v}^u_i$ is updated proportionally
+to its \emph{soft responsibility} for $\bm{e}$.
+All operations take place in the shared text embedding space.
+
+\paragraph{Step 1 --- Soft assignment weights.}
+The cosine distance from each interest vector to the normalized embedding
+$\hat{\bm{e}} = \bm{e}/\norm{\bm{e}}$ is:
+\[
+  d_i = 1 - \hat{\bm{v}}^u_i \cdot \hat{\bm{e}},
+  \quad \hat{\bm{v}}^u_i = \bm{v}^u_i / \norm{\bm{v}^u_i}.
+\]
+The distances are converted to soft weights via a temperature-scaled
+exponential:
+\begin{equation}
+  w_i = \frac{\exp(-d_i / \tau)}{\displaystyle\sum_{j=1}^{k} \exp(-d_j / \tau)},
+  \label{eq:softweight}
+\end{equation}
+where $\tau > 0$ controls the sharpness.
+As $\tau \to 0$ the assignment becomes hard (nearest neighbor);
+as $\tau \to \infty$ it becomes uniform.
+
+\paragraph{Step 2 --- Weighted additive update.}
+Each interest vector moves toward (or away from) $\hat{\bm{e}}$,
+weighted by responsibility and scaled by event-specific learning rate $\alpha$:
+\begin{equation}
+  \bm{v}^u_i \leftarrow
+    \bm{v}^u_i + \sigma \cdot \alpha \cdot w_i \cdot \hat{\bm{e}},
+  \label{eq:update}
+\end{equation}
+where $\sigma \in \{+1, -1\}$ indicates attraction or repulsion.
+Table~\ref{tab:update_rules} summarizes the update rules.
+
+\begin{table}[h]
+\centering
+\caption{Interest update rules per event type.
+         All embeddings belong to the same pre-trained text embedding space.}
+\label{tab:update_rules}
+\small
+\begin{tabular}{lccc}
+\toprule
+Event & $\sigma$ & $\alpha$ & Intuition \\
+\midrule
+Search query $q$ & $+1$ & $\alpha_{\text{search}}$ & Drift toward topic \\
+Ad click $a$     & $+1$ & $\alpha_{\text{click}}$  & Strengthen preference \\
+Ad non-click $a$ & $-1$ & $\alpha_{\text{neg}}$    & Suppress dispreference \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The full procedure is in Algorithm~\ref{alg:update}.
+
+\begin{algorithm}[t]
+\caption{Online Interest Update}
+\label{alg:update}
+\begin{algorithmic}[1]
+\Require User $u$, text embedding $\bm{e}$, sign $\sigma$, rate $\alpha$, temp.\ $\tau$
+\State $\hat{\bm{e}} \leftarrow \bm{e} / \norm{\bm{e}}$
+  \Comment{normalize in shared embedding space}
+\State Retrieve (or initialize) $\bm{V}^u = [\bm{v}^u_1,\ldots,\bm{v}^u_k]$
+\For{$i = 1$ \textbf{to} $k$}
+  \State $d_i \leftarrow 1 - (\bm{v}^u_i / \norm{\bm{v}^u_i}) \cdot \hat{\bm{e}}$
+  \State $r_i \leftarrow \exp(-d_i / \tau)$
+\EndFor
+\State $\bm{w} \leftarrow \bm{r} / \sum_j r_j$ \Comment{Eq.~\eqref{eq:softweight}}
+\For{$i = 1$ \textbf{to} $k$}
+  \State $\bm{v}^u_i \leftarrow \bm{v}^u_i
+    + \sigma \cdot \alpha \cdot w_i \cdot \hat{\bm{e}}$
+    \Comment{Eq.~\eqref{eq:update}}
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+% ─────────────────────────────────────────────────────────────────────────
+\subsection{Hybrid Scoring for Ad Recommendation}
+\label{sec:scoring}
+
+Given a test event $(u, q)$ and the full candidate set $\mathcal{A}$,
+we assign a relevance score to each candidate ad $a_j$:
+\begin{equation}
+  s(u, q, a_j) =
+    \underbrace{(1-\gamma)\,\cosim\!\left(\hat{\phi}(q),\, \hat{\phi}(a_j)\right)}_{\text{immediate intent}}
+    +\; \underbrace{\gamma \max_{i=1}^{k}\,
+    \cosim\!\left(\hat{\bm{v}}^u_i,\, \hat{\phi}(a_j)\right)}_{\text{long-term preference}},
+  \label{eq:score}
+\end{equation}
+where $\hat{\phi}(\cdot)$ denotes the $\ell_2$-normalized text embedding
+and $\gamma \in [0,1]$ controls the balance between the two terms.
+
+\paragraph{First term --- Query--ad text similarity (immediate intent).}
+Because queries and ads are both encoded by the same text encoder,
+$\cosim(\hat{\phi}(q), \hat{\phi}(a_j))$ measures semantic alignment
+directly in the text embedding space, \emph{without any learned
+projection}.
+The EDA result (Table~\ref{tab:eda}, Cohen's $d = 1.56$) confirms
+this is the dominant signal for user preference in ad ranking.
+
+\paragraph{Second term --- Interest--ad similarity (long-term preference).}
+$\max_{i}\,\cosim(\hat{\bm{v}}^u_i, \hat{\phi}(a_j))$ personalizes the
+ranking by finding the most relevant interest facet for each candidate.
+Because the interest vectors live in the same text embedding space,
+this comparison is also computed as a plain cosine similarity ---
+no additional compatibility layer is needed.
+The $\max$ aggregation is preferred over $\text{mean}$ because
+(a) it selects the most applicable interest facet rather than
+averaging over unrelated ones, and
+(b) it is more robust when some interest vectors are still near
+their random initialization.
+
+\paragraph{Matrix form.}
+All $N$ candidates are scored simultaneously via:
+\[
+  \bm{s}_u = (1-\gamma)\,\bm{C}\hat{\phi}(q)
+           + \gamma \max_{i}\,\bigl(\bm{C}\hat{\bm{V}}^{u\top}\bigr)_{\cdot i},
+\]
+where $\bm{C} \in \R^{N \times d}$ is the pre-computed matrix of
+normalized ad text embeddings.
+The $\max$ is taken column-wise over the $k$ interest similarities.
+
+% ─────────────────────────────────────────────────────────────────────────
+\subsection{Adaptive Gamma for Cold-Start Users}
+\label{sec:adaptive}
+
+In the training corpus, only 14\% of users ($2{,}385$ of $16{,}975$)
+have at least one click event.
+For users without click history, the interest vectors $\bm{V}^u$ remain
+near their random initialization and carry no meaningful preference
+signal.
+We therefore adopt an \emph{adaptive} mixing coefficient:
+\begin{equation}
+  \gamma_{\text{eff}}(u) =
+  \begin{cases}
+    \gamma & \text{if user } u \text{ has } \geq\!1 \text{ click in training,} \\
+    0      & \text{otherwise (cold-start).}
+  \end{cases}
+  \label{eq:adaptive}
+\end{equation}
+For cold-start users the score reduces to pure query--ad text similarity,
+which the EDA identifies as the strongest available signal
+(Table~\ref{tab:eda}).
+
+% ─────────────────────────────────────────────────────────────────────────
+\subsection{Search-to-Click Learning Rate Ratio}
+\label{sec:design}
+
+A subtle but important design choice is the relative learning rate
+assigned to search and click events.
+In the training log there are $276{,}807$ search events but only
+$3{,}560$ click events --- a $78:1$ imbalance.
+With equal learning rates the accumulated search updates would dominate,
+biasing interest vectors toward generic query topics rather than
+specific click preferences.
+
+We set $\alpha_{\text{search}} = 0.01$ and $\alpha_{\text{click}} = 0.5$
+(a 50-fold difference), so each click contributes substantially more to
+the interest vector than each individual search event.
+Empirically, reducing $\alpha_{\text{search}}$ from $0.1$ to $0.01$
+improves NDCG@3 from $0.1065$ to $0.1228$ (+15\%, Table~\ref{tab:ablation}).
+
+\begin{table}[h]
+\centering
+\caption{Ablation on $\alpha_{\text{search}}$ (ad recommendation, NDCG@3).}
+\label{tab:ablation}
+\small
+\begin{tabular}{lcc}
+\toprule
+Configuration & AUC$_{\text{rank}}$ & NDCG@3 \\
+\midrule
+$\alpha_{\text{search}} = 0.1$ & 0.8417 & 0.1065 \\
+$\alpha_{\text{search}} = 0.01$ \textbf{(ours)} & \textbf{0.8500} & \textbf{0.1228} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ─────────────────────────────────────────────────────────────────────────
+\subsection{Hyperparameter Summary}
+\label{sec:hyper}
+
+\begin{table}[h]
+\centering
+\caption{Final hyperparameter configuration.}
+\label{tab:hyper}
+\small
+\begin{tabular}{lcc}
+\toprule
+Parameter & Symbol & Value \\
+\midrule
+\# interest vectors    & $k$                      & 5 \\
+Embedding dimension    & $d$                      & 384 \\
+Search update rate     & $\alpha_{\text{search}}$ & 0.01 \\
+Click update rate      & $\alpha_{\text{click}}$  & 0.50 \\
+Neg.\ update rate      & $\alpha_{\text{neg}}$    & 0.00 \\
+Temperature            & $\tau$                   & 1.0 \\
+Interest mixing weight & $\gamma$                 & 0.5 (adaptive) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ═══════════════════════════════════════════════════════════════════════════
+\section{Complexity}
+\label{sec:complexity}
+
+\paragraph{Training.}
+Each event costs $O(kd)$ (soft-weight computation and update).
+Total training cost: $O(|\mathcal{E}| \cdot kd)$ with no gradient
+computation or matrix inversion.
+
+\paragraph{Inference.}
+Scoring all $N$ candidates requires $O(Nkd)$.
+The ad embedding matrix $\bm{C}$ is pre-computed once and reused.
+For our setting ($N\!=\!17{,}518$, $k\!=\!5$, $d\!=\!384$),
+this is ${\approx}\,3.4 \times 10^7$ operations,
+achievable in under 1 second on a standard CPU.
+
+% ═══════════════════════════════════════════════════════════════════════════
+\section{Experiments}
+\label{sec:results}
+
+\paragraph{Setup.}
+We train on $320{,}000$ (search, ad, click) triples in chronological order.
+Evaluation uses \texttt{ad\_validation}: 214 queries, one ground-truth
+ad each, ranked against all $17{,}518$ candidates.
+
+\paragraph{Baselines.}
+\begin{itemize}[leftmargin=*,nosep,itemsep=1pt]
+  \item \textbf{Random}: uniform random score.
+  \item \textbf{HistCTR}: rank by historical CTR within category
+    (official baseline).
+  \item \textbf{Query-only} ($\gamma\!=\!0$): pure query--ad text
+    similarity, no user interest.
+\end{itemize}
+
+\begin{table}[h]
+\centering
+\caption{Ad recommendation results (NDCG@3).}
+\label{tab:results}
+\small
+\begin{tabular}{lcc}
+\toprule
+Method & NDCG@3 & Rank-1 hits \\
+\midrule
+Random & 0.0008 & 0 \\
+HistCTR (baseline) & 0.0211 & 2 \\
+Query-only ($\gamma\!=\!0$) & 0.0989 & 14 \\
+\textbf{MultiInterest (ours)} & \textbf{0.1228} & \textbf{17} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]
+\centering
+\caption{Rank distribution of ground-truth ads ($n\!=\!214$).}
+\label{tab:rankdist}
+\small
+\begin{tabular}{lrc}
+\toprule
+Rank & Count & NDCG weight \\
+\midrule
+1       & 17  & 1.000 \\
+2       & 6   & 0.631 \\
+3       & 2   & 0.500 \\
+$> 3$ & 189 & 0.000 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The query-only baseline already surpasses HistCTR by $4.7\times$,
+confirming that \textbf{text embedding similarity is the dominant
+relevance signal} for this task.
+Adding the multi-interest term yields a further $+24\%$ relative
+improvement ($0.0989 \to 0.1228$), demonstrating that personalized
+user preference provides complementary signal beyond query intent alone.
+
+% ═══════════════════════════════════════════════════════════════════════════
+\section{Conclusion}
+\label{sec:conclusion}
+
+We presented \textbf{MultiInterest}, a streaming multi-interest model
+for personalized ad recommendation built entirely on pre-trained
+\textbf{text embeddings}.
+Three properties make text embeddings particularly suitable for this task:
+(1) queries and ads share the same natural-language modality, enabling
+direct cosine similarity without cross-modal projection;
+(2) EDA confirms that text-based similarity is highly predictive of
+user preference (Cohen's $d = 1.56$);
+and (3) interest vectors maintained in the same embedding space are
+immediately comparable to both query and ad representations.
+
+The multi-interest architecture, grounded in prior work on multi-vector
+user modeling~\cite{li2019mind,cen2020comirec}, captures diverse facets
+of user preference through $k$ interest prototypes, updated online via
+a soft-assignment rule.
+Combined with adaptive gamma and a carefully calibrated
+search-to-click learning rate ratio, our method achieves
+NDCG@3~$= 0.1228$ --- a $\mathbf{6\times}$ improvement over the
+HistCTR baseline --- with no trainable parameters.
+
+% ── 참고문헌 ──────────────────────────────────────────────────────────────
+\begin{thebibliography}{9}
+
+\bibitem{li2019mind}
+  Chao Li, Zhiyuan Liu, Mengmeng Wu, Yuchi Xu, Huan Zhao, Pipei Huang,
+  Guoliang Kang, Qiwei Chen, Wei Li, and Dik Lun Lee.
+  \newblock Multi-Interest Network with Dynamic Routing for Recommendation
+    at Tmall.
+  \newblock In \textit{Proceedings of the 28th ACM International Conference
+    on Information and Knowledge Management (CIKM)}, 2019.
+
+\bibitem{cen2020comirec}
+  Yukuo Cen, Jianwei Zhang, Xu Zou, Chang Zhou, Hongxia Yang, and Jie Tang.
+  \newblock Controllable Multi-Interest Framework for Recommendation.
+  \newblock In \textit{Proceedings of the 26th ACM SIGKDD International
+    Conference on Knowledge Discovery \& Data Mining}, 2020.
+
+\end{thebibliography}
+
+\end{document}

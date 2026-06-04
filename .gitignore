@@ -1,0 +1,24 @@
+# 과제 원본 PDF (배포 제한)
+S26_AI506_Project.pdf
+
+# 데이터셋 디렉토리 (용량 대형 파일)
+data/
+
+# Python 캐시
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# 실험 결과 / 임시 파일
+*.json
+*.npy
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# Claude Code 설정
+.claude/
