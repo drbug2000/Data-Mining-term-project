@@ -90,26 +90,14 @@ def main() -> None:
                         batch_size=1024, lr=3e-4,
                         focal_gamma=2.0, smooth_prior=10)
 
-    # (tag, GNNConfig kwargs)
+    # 12d 피처 (sim_sa_raw + is_click_user 추가) 기준으로 L=2, L=4 비교
     experiments = [
-        ("baseline (mean, cw=5)",
+        ("L=2 (sim_sa_gnn+raw+flag)",
          dict(n_layers=2, agg_fn="mean", click_weight=5.0,
               residual_alpha=0.0, user_click_init=False)),
-        ("max agg",
-         dict(n_layers=2, agg_fn="max",  click_weight=5.0,
+        ("L=4 (sim_sa_gnn+raw+flag)",
+         dict(n_layers=4, agg_fn="mean", click_weight=5.0,
               residual_alpha=0.0, user_click_init=False)),
-        ("residual α=0.2",
-         dict(n_layers=2, agg_fn="mean", click_weight=5.0,
-              residual_alpha=0.2, user_click_init=False)),
-        ("residual α=0.4",
-         dict(n_layers=2, agg_fn="mean", click_weight=5.0,
-              residual_alpha=0.4, user_click_init=False)),
-        ("user_click_init",
-         dict(n_layers=2, agg_fn="mean", click_weight=5.0,
-              residual_alpha=0.0, user_click_init=True)),
-        ("residual α=0.2 + user_init",
-         dict(n_layers=2, agg_fn="mean", click_weight=5.0,
-              residual_alpha=0.2, user_click_init=True)),
     ]
 
     sweep_results = []

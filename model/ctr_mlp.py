@@ -297,17 +297,28 @@ class CTRPredictor:
         return _sigmoid(a2 @ self.W3 + self.b3)[:, 0]
 
     def _feat_raw(self, ev, ad) -> np.ndarray | None:
-        """SearchEvent × AdRecord → 10d raw (정규화 전) feature vector."""
+        """SearchEvent × AdRecord → 12d raw (정규화 전) feature vector.
+
+        추가된 피처:
+          sim_sa_raw   : cosine(raw_query_emb, raw_ad_emb) — GNN 전파 없는 순수 텍스트 유사도
+                         클릭 유저에서 sim_sa_gnn이 오염되므로 별도 신호로 제공
+          is_click_user: 훈련에서 클릭 이력 있는 유저 플래그 (0/1)
+                         MLP이 유저 그룹 조건부 가중치를 학습할 수 있도록
+        """
         g  = self._gnn
         si = g._search_id_to_idx.get(ev.search_id)
         ai = g._ad_id_to_idx.get(ad.ad_id)
         if si is None or ai is None:
             return None
 
-        # ── 코사인 유사도 (1) ─────────────────────────────────────────────
+        # ── 코사인 유사도 (2) ─────────────────────────────────────────────
         h_s = _unit(g._search_repr[si])
         h_a = _unit(g._ad_feat[ai])
-        sim_sa = float(h_s @ h_a)
+        sim_sa_gnn = float(h_s @ h_a)                          # GNN 전파 후
+
+        h_s_raw = _unit(g._search_feat_raw[si])
+        h_a_raw = _unit(g._ad_feat_raw[ai])
+        sim_sa_raw = float(h_s_raw @ h_a_raw)                  # 순수 텍스트
 
         # ── 노출/위치 (4) ─────────────────────────────────────────────────
         pos      = ad.position
@@ -322,16 +333,18 @@ class CTRPredictor:
         search_cat_id = float(ev.category_id)
         ad_cat_id     = float(ad.category_id)
 
-        # ── 광고 속성 (2) ─────────────────────────────────────────────────
-        log_price    = float(np.log1p(ad.price))
-        is_logged_on = float(ev.is_logged_on)
+        # ── 광고 속성 (2) + 유저 그룹 플래그 (1) ─────────────────────────
+        log_price     = float(np.log1p(ad.price))
+        is_logged_on  = float(ev.is_logged_on)
+        is_click_user = float(ev.user_id in g._clicked_users)  # 클릭 이력 유저
 
         return np.array([
-            sim_sa,
+            sim_sa_gnn, sim_sa_raw,
             log_pos, inv_pos, is_top1, hist_ctr,
             cat_match, search_cat_id, ad_cat_id,
             log_price, is_logged_on,
-        ], dtype=np.float32)  # (10,)
+            is_click_user,
+        ], dtype=np.float32)  # (12,)
 
 
 # ── 모듈 유틸 ──────────────────────────────────────────────────────────────
