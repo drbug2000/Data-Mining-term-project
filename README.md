@@ -211,12 +211,52 @@ if __name__ == "__main__":
 
 ## 현재 모델 성능 (validation 기준)
 
-| 모델 | Task A F1 | Task A AUC | Task B NDCG@3 | Task B MRR |
-|------|:---------:|:----------:|:-------------:|:----------:|
-| m01 MultiInterest (streaming) | 0.0335 | 0.5576 | 0.1445 | 0.1582 |
-| m01 Batch-KMeans | 0.0322 | 0.5695 | 0.1246 | 0.1344 |
-| m01 Batch-SVD | 0.0331 | 0.5706 | 0.0936 | 0.1086 |
-| m02 GNN | — | — | — | — |
-| m03 CTR MLP | — | — | — | — |
-| Query-only baseline | 0.0250 | 0.5375 | 0.0989 | 0.1197 |
-| HistCTR baseline | 0.0436 | — | 0.0211 | — |
+### Task A — Click Prediction (지표: F1, IsClick=1 기준)
+
+| 모델 | F1 | AUC | Precision | Recall | 비고 |
+|------|:--:|:---:|:---------:|:------:|------|
+| **m03 GNN + CTR MLP** ★ | **0.0921** | 0.5836 | 0.0921 | 0.0917 | 현재 최고 |
+| m01 MultiInterest (streaming) | 0.0335 | 0.5576 | — | — | |
+| m01 Batch-KMeans | 0.0322 | 0.5695 | — | — | |
+| HistCTR baseline | 0.0436 | — | — | — | 단순 CTR 기반 |
+| Always-0 baseline | 0.0000 | 0.5000 | — | — | |
+
+### Task B — Ad Recommendation (지표: NDCG@3)
+
+| 모델 | NDCG@3 | Rank@1 | 비고 |
+|------|:------:|:------:|------|
+| **m01 MultiInterest (streaming)** ★ | **0.1445** | 26/214 | 현재 최고 |
+| m01 Batch-KMeans | 0.1246 | — | |
+| m01 Batch-SVD | 0.0936 | — | |
+| m03 GNN + CTR MLP | 0.0906 | 17/214 | |
+| Query-only baseline | 0.0989 | — | |
+| HistCTR baseline | 0.0211 | — | |
+
+> **★ 최고 성능 구성 상세**
+>
+> **Task A** — `m03 GNN + CTR MLP`
+> - GNN: `n_layers=2`, `agg_fn=mean`, `click_weight=5`
+> - 그래프: `transductive=True`, `include_test=True`, `top_k_sim=5`
+>   - `search_to_ad_click` (3,560개, click_weight=5 균등)
+>   - `user_to_search` (240,698개, 클릭발생 search=3.0 / 기타=1.0)
+>   - `search_to_search_sim` top-5 cosine, 클릭발생 search에서만 (34,868개)
+>   - `ad_to_ad_sim` top-5 cosine, 클릭발생 ad에서만 (19,464개)
+> - MLP 피처 (10d): `sim_sa`, `log_pos`, `inv_pos`, `is_top1`, `hist_ctr`,
+>   `cat_match`, `search_cat_id`, `ad_cat_id`, `log_price`, `is_logged_on`
+> - MLP 설정: `hidden_dim=64→32`, `dropout=0.4`, `AdamW(wd=1e-3)`, Focal Loss, Early Stopping
+>
+> **Task B** — `m01 MultiInterest (streaming)`
+> - `k=5`, `alpha_search=0.01`, `alpha_click=0.5`, `gamma=0.7`, `gamma_search=0.5`
+
+---
+
+## 유저 그룹별 Task A 성능 분석 (m03 최고 구성 기준)
+
+| 유저 그룹 | 비율 | F1 | AUC | sim_sa Gap |
+|-----------|:----:|:--:|:---:|:----------:|
+| 신규 유저 (cold-start) | 29% | **0.1170** | 0.6317 | +0.058 |
+| 기존 유저 (검색만) | 47% | 0.0941 | 0.5469 | -0.030 |
+| 기존 유저 (클릭 이력) | 24% | 0.0522 | 0.5561 | +0.002 |
+
+- cold-start 유저에서 성능이 가장 높음 (GNN repr = 순수 text emb)
+- 클릭 이력 유저에서 GNN 전파가 `sim_sa` 신호를 희석시키는 한계 존재
