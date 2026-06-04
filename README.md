@@ -226,7 +226,7 @@ MRR은 해당 평가 스크립트에서 보고한 모델만 기재했다.
 
 | 모델 | Task A F1 | Task A AUC | Task B NDCG@3 | Task B MRR |
 |------|:---------:|:----------:|:-------------:|:----------:|
-| m04 GatedCTR (5 CTR + content, F1-objective) | **0.0970** | **0.6977** | 0.1368 | — |
+| m04 GatedCTR (5 CTR + content, F1-objective) | **0.0955** | **0.7028** | 0.1368 | — |
 | m03 CTR MLP (10d, pos+cat) | 0.0760 | 0.6691 | 0.0906 | — |
 | m01 MultiInterest (streaming) | 0.0335 | 0.5576 | 0.1445 | 0.1582 |
 | m01 Batch-KMeans | 0.0322 | 0.5695 | 0.1246 | 0.1344 |

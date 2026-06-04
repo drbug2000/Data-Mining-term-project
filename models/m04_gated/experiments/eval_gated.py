@@ -30,6 +30,7 @@ from shared.data.dataset import RecoDataset
 from shared.eval.predictor import (
     evaluate_task_a,
     evaluate_task_b_ndcg,
+    score_task_a,
     score_task_b,
 )
 from models.m04_gated import GateConfig, GatedCTRModel
@@ -82,7 +83,7 @@ def main() -> None:
     section("3. Task A | Click Prediction (F1)")
     n_clk = int(val_clk_ans["IsClick"].sum())
     print(f"  val click={n_clk} ({n_clk/len(val_clk_ans):.2%})")
-    scores = list(model.score_pairs(val_clk_q))
+    scores = score_task_a(model, val_clk_q)
     best_f1, best_thr, m = sweep_f1(scores, val_clk_ans)
     print(f"  GatedCTR (ours)  F1={fmt(m['f1'])}  P={fmt(m['precision'])}  "
           f"R={fmt(m['recall'])}  AUC={fmt(m['auc'])}  thr*={best_thr:.2f}")
