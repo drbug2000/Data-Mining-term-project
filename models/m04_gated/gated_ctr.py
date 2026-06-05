@@ -40,7 +40,7 @@ from shared.base import BaseRecoModel
 from models.m04_gated.config import GateConfig
 
 EPS = 1e-6
-CTR_KEYS = ("ad", "ip", "dv", "ca")   # ad_ctr, ip_ctr, dev_ctr, cat_ctr (HistCTR 별도)
+CTR_KEYS = ("ad", "ip", "dv", "ca", "us", "uc")   # + user_ctr, user_cat_ctr
 
 try:                       # content head 학습만 torch 사용(있으면). 추론은 항상 numpy.
     import torch as _torch  # noqa: F401
@@ -71,8 +71,16 @@ class GatedCTRModel(BaseRecoModel):
     # 학습
     # ------------------------------------------------------------------
 
-    def fit(self, ds, val_pairs=None, val_answers_df=None) -> "GatedCTRModel":
-        """학습 스트림으로 content head + F1 지수(+선택 게이트)를 적합. val_* 는 선택에 미사용."""
+    def fit(self, ds, val_pairs=None, val_answers_df=None, split_seed=None,
+            split_mode="sorted") -> "GatedCTRModel":
+        """학습 스트림으로 content head + F1 지수(+선택 게이트)를 적합. val_* 는 선택에 미사용.
+
+        내부-val split (모두 leak-free group split):
+          split_mode='sorted' (기본): 정렬 SearchID 뒤 20% (repo 방식).
+          split_mode='random': SearchID 랜덤 20% (split_seed).
+          split_mode='user'  : UserID 랜덤 20% → 그 유저 행을 내부-val 로 (미관측 유저 ≈ external
+                                cold-start 모사). split_seed 로 seed 지정.
+        """
         cfg = self.config
         np.random.seed(cfg.seed)
         self._lo = float(np.log(cfg.login_boost))
@@ -81,6 +89,7 @@ class GatedCTRModel(BaseRecoModel):
         # ── 1. 스트림 수집 ─────────────────────────────────────────────
         Q, A, Y = [], [], []
         ad_ids, cat_ids, user_ids, hist, logged, search_ids = [], [], [], [], [], []
+        pos_feat, cat_match = [], []
         for ev in ds.training_stream():
             uid, sid = ev.user_id, ev.search_id
             for ad in ev.ads:
@@ -90,11 +99,14 @@ class GatedCTRModel(BaseRecoModel):
                 search_ids.append(sid)
                 hist.append(float(ad.hist_ctr) if ad.hist_ctr is not None else 0.0)
                 logged.append(float(ev.is_logged_on))
+                pos_feat.append(-np.log1p(float(ad.position)))
+                cat_match.append(float(ev.category_id == ad.category_id and ev.category_id != -1))
 
         Q = _l2_normalize(np.asarray(Q, np.float32)); A = _l2_normalize(np.asarray(A, np.float32))
         Y = np.asarray(Y, np.float32)
         ad_ids = np.asarray(ad_ids); cat_ids = np.asarray(cat_ids); user_ids = np.asarray(user_ids)
         hist = np.asarray(hist, np.float32); logged = np.asarray(logged, np.float32)
+        pos_feat = np.asarray(pos_feat, np.float32); cat_match = np.asarray(cat_match, np.float32)
         print(f"[gated] train rows={len(Y):,}  global CTR={Y.mean():.4f}  ({time.time()-t0:.1f}s)")
 
         # ── 1b. IPID/device (CSV 직접 로드) ────────────────────────────
@@ -104,38 +116,70 @@ class GatedCTRModel(BaseRecoModel):
         ip_ids = np.array([self._sid2ip.get(int(s), -1) for s in search_ids])
         dev_ids = np.array([self._uid2dev.get(int(u), -1) for u in user_ids.tolist()])
 
-        # ── 2. 내부 SearchID 80/20 split ───────────────────────────────
-        uniq = np.unique(search_ids); cut = int(len(uniq) * 0.8)
-        va_sids = set(np.sort(uniq)[cut:].tolist())
-        mask_va = np.array([s in va_sids for s in search_ids], dtype=bool); mask_tr = ~mask_va
+        # ── 2. 내부 80/20 group split (leak 방지) ──────────────────────
+        sid_arr = np.asarray(search_ids)
+        if split_mode == "user":
+            uu = np.unique(user_ids); cutu = int(len(uu) * 0.8)
+            va_users = set(np.random.RandomState(split_seed or 0).permutation(uu)[cutu:].tolist())
+            mask_va = np.array([u in va_users for u in user_ids.tolist()], dtype=bool)
+        elif split_mode == "random":
+            uniq = np.unique(sid_arr); cut = int(len(uniq) * 0.8)
+            va_sids = set(np.random.RandomState(split_seed or 0).permutation(uniq)[cut:].tolist())
+            mask_va = np.array([s in va_sids for s in search_ids], dtype=bool)
+        else:                                                          # sorted (repo)
+            uniq = np.unique(sid_arr); cut = int(len(uniq) * 0.8)
+            va_sids = set(np.sort(uniq)[cut:].tolist())
+            mask_va = np.array([s in va_sids for s in search_ids], dtype=bool)
+        mask_tr = ~mask_va
 
         # ── 3. content head: 내부-train 학습 / 내부-val AUC early-stop ──
         self._fit_head(Q[mask_tr], A[mask_tr], Y[mask_tr], Q[mask_va], A[mask_va], Y[mask_va])
+        print(f"[gated] stage head  {time.time()-t0:.1f}s")
         proto_full = self._build_protos(user_ids, A, Y)
         self._user_protos = self._build_protos(user_ids[mask_tr], A[mask_tr], Y[mask_tr])
+        print(f"[gated] stage protos  {time.time()-t0:.1f}s")
         con = self._content_logit(Q, A, user_ids)
         self._con_mu, self._con_sd = float(con[mask_tr].mean()), float(con[mask_tr].std() + 1e-9)
         con_z = (con - self._con_mu) / self._con_sd
+        print(f"[gated] stage content  {time.time()-t0:.1f}s")
 
         # ── 4. 카운트 (내부-train: leak 방지 / full: 외부) ─────────────
-        cnt_tr = self._count_subset(ad_ids[mask_tr], cat_ids[mask_tr], ip_ids[mask_tr], dev_ids[mask_tr], Y[mask_tr])
-        self._cnt_full = self._count_subset(ad_ids, cat_ids, ip_ids, dev_ids, Y)
+        cnt_tr = self._count_subset(ad_ids[mask_tr], cat_ids[mask_tr], ip_ids[mask_tr], dev_ids[mask_tr],
+                                    user_ids[mask_tr], Y[mask_tr])
+        self._cnt_full = self._count_subset(ad_ids, cat_ids, ip_ids, dev_ids, user_ids, Y)
+        print(f"[gated] stage counts  {time.time()-t0:.1f}s")
 
-        # ── 5. 설계행렬 [5 CTR, z(content)] + login offset, F1 지수 적합 ─
-        X5_va = self._ctr5(ad_ids[mask_va], cat_ids[mask_va], ip_ids[mask_va], dev_ids[mask_va], hist[mask_va], cnt_tr)
-        X6_va = np.column_stack([X5_va, con_z[mask_va]])
+        # ── 5. 설계행렬 [CTR 통계, pos, cat-match, z(content)] + login offset ─
+        X7_va = self._ctr7(ad_ids[mask_va], cat_ids[mask_va], ip_ids[mask_va], dev_ids[mask_va],
+                           user_ids[mask_va], hist[mask_va], cnt_tr)
+        print(f"[gated] stage ctr7-va  {time.time()-t0:.1f}s")
+        X10_va = np.column_stack([X7_va, pos_feat[mask_va], cat_match[mask_va], con_z[mask_va]])
         base_va = self._lo * (1.0 - logged[mask_va])
-        self._w = _fit_f1_exponents(X6_va, Y[mask_va], base=base_va)
-        s_va = X6_va @ self._w + base_va
-        print(f"[gated] F1-fit w={np.round(self._w,2)} [logHist,ad,ip,dev,cat,content]  "
-              f"(honest internal-val F1={_best_f1_topk(s_va, Y[mask_va])[0]:.4f})")
+        fit_idx = _sample_for_f1_fit(Y[mask_va], cfg.f1_fit_max_rows, cfg.seed)
+        print(f"[gated] stage f1-sample  {time.time()-t0:.1f}s")
+        grid = np.arange(0.0, 3.0 + cfg.f1_fit_grid_step * 0.5, cfg.f1_fit_grid_step)
+        self._w = _fit_f1_exponents(
+            X10_va[fit_idx], Y[mask_va][fit_idx], base=base_va[fit_idx],
+            grid=grid, n_pass=cfg.f1_fit_passes,
+        )
+        print(f"[gated] stage f1-weights  {time.time()-t0:.1f}s")
+        s_va = X10_va @ self._w + base_va
+        self._sel_f1 = _best_f1_topk(s_va, Y[mask_va])[0]   # 내부-val 선택 추정 F1
+        tr_users = set(user_ids[mask_tr].tolist())
+        self._va_unseen_user = float(np.mean([u not in tr_users for u in user_ids[mask_va].tolist()]))
+        print(f"[gated] F1-fit w={np.round(self._w,2)} "
+              f"[logHist,ad,ip,dev,cat,user,userCat,negPos,catMatch,content]  "
+              f"(internal-val F1={self._sel_f1:.4f}, val 미관측유저={self._va_unseen_user:.1%}, "
+              f"fit_rows={len(fit_idx):,})")
+        print(f"[gated] stage f1-fit  {time.time()-t0:.1f}s")
 
         # ── 6. (선택) support 게이트 — 내부-train z + 내부-val t ───────
         if cfg.use_gate:
-            X5_tr = self._ctr5(ad_ids[mask_tr], cat_ids[mask_tr], ip_ids[mask_tr], dev_ids[mask_tr], hist[mask_tr], cnt_tr)
-            ent_tr = X5_tr @ self._w[:5] + self._lo * (1.0 - logged[mask_tr])
+            X7_tr = self._ctr7(ad_ids[mask_tr], cat_ids[mask_tr], ip_ids[mask_tr], dev_ids[mask_tr],
+                               user_ids[mask_tr], hist[mask_tr], cnt_tr)
+            ent_tr = np.column_stack([X7_tr, pos_feat[mask_tr], cat_match[mask_tr]]) @ self._w[:9] + self._lo * (1.0 - logged[mask_tr])
             self._ent_mu, self._ent_sd = float(ent_tr.mean()), float(ent_tr.std() + 1e-9)
-            ent_va = X5_va @ self._w[:5] + base_va
+            ent_va = np.column_stack([X7_va, pos_feat[mask_va], cat_match[mask_va]]) @ self._w[:9] + base_va
             ent_va_z = (ent_va - self._ent_mu) / self._ent_sd
             sup_va = self._support_vec(ad_ids[mask_va], user_ids[mask_va], cnt_tr)
             if cfg.gate_t is None:
@@ -169,22 +213,25 @@ class GatedCTRModel(BaseRecoModel):
         user_ids = np.array([ev.user_id for ev, _ in pairs])
         hist = np.array([float(ad.hist_ctr) if ad.hist_ctr is not None else 0.0 for _, ad in pairs], np.float32)
         logged = np.array([float(ev.is_logged_on) for ev, _ in pairs], np.float32)
+        pos_feat = np.array([-np.log1p(float(ad.position)) for _, ad in pairs], np.float32)
+        cat_match = np.array([float(ev.category_id == ad.category_id and ev.category_id != -1)
+                              for ev, ad in pairs], np.float32)
         ip_ids = np.array([self._sid2ip.get(int(ev.search_id), -1) for ev, _ in pairs])
         dev_ids = np.array([self._uid2dev.get(int(ev.user_id), -1) for ev, _ in pairs])
 
-        X5 = self._ctr5(ad_ids, cat_ids, ip_ids, dev_ids, hist, self._cnt_full)
+        X7 = self._ctr7(ad_ids, cat_ids, ip_ids, dev_ids, user_ids, hist, self._cnt_full)
         con = self._content_logit(Q, A, list(user_ids))
         con_z = (con - self._con_mu) / self._con_sd
         base = self._lo * (1.0 - logged)
 
         if self.config.use_gate:
-            ent = X5 @ self._w[:5] + base
+            ent = np.column_stack([X7, pos_feat, cat_match]) @ self._w[:9] + base
             ent_z = (ent - self._ent_mu) / self._ent_sd
             sup = self._support_vec(ad_ids, user_ids, self._cnt_full)
             g = _sigmoid((sup - self._gate_t) / self.config.gate_s)
             raw = g * ent_z + (1 - g) * con_z
         else:
-            raw = np.column_stack([X5, con_z]) @ self._w + base
+            raw = np.column_stack([X7, pos_feat, cat_match, con_z]) @ self._w + base
         return _rank01(raw)
 
     # ------------------------------------------------------------------
@@ -363,10 +410,20 @@ class GatedCTRModel(BaseRecoModel):
         beta = self.config.interest_beta
         if beta > 0:
             bonus = np.zeros(len(A), dtype=np.float32)
-            for i, uid in enumerate(user_ids):
-                protos = self._user_protos.get(uid)
+            uid_arr = np.asarray(user_ids)
+            order = np.argsort(uid_arr, kind="stable")
+            uid_sorted = uid_arr[order]
+            start = 0
+            while start < len(order):
+                end = start + 1
+                uid = int(uid_sorted[start])
+                while end < len(order) and uid_sorted[end] == uid:
+                    end += 1
+                protos = self._user_protos.get(int(uid))
                 if protos is not None:
-                    bonus[i] = float((A[i] @ protos.T).max())
+                    idx = order[start:end]
+                    bonus[idx] = (A[idx] @ protos.T).max(axis=1).astype(np.float32)
+                start = end
             logit = logit + beta * bonus
         return logit
 
@@ -374,32 +431,36 @@ class GatedCTRModel(BaseRecoModel):
     # 내부 — CTR feature / 카운트 / support
     # ------------------------------------------------------------------
 
-    def _count_subset(self, ad_ids, cat_ids, ip_ids, dev_ids, Y) -> dict:
-        """행 부분집합으로 ad/ip/dev/cat CTR 카운트 + global."""
-        keys = {"ad": ad_ids, "ip": ip_ids, "dv": dev_ids, "ca": cat_ids}
+    def _count_subset(self, ad_ids, cat_ids, ip_ids, dev_ids, user_ids, Y) -> dict:
+        """행 부분집합으로 ad/ip/dev/cat/user/user-cat CTR 카운트 + global."""
+        uc_keys = list(zip(user_ids.tolist(), cat_ids.tolist()))
+        keys = {"ad": ad_ids, "ip": ip_ids, "dv": dev_ids, "ca": cat_ids, "us": user_ids, "uc": uc_keys}
         out = {"g": float(Y.mean())}
         yl = Y.tolist()
         for name, arr in keys.items():
             s, c = {}, {}
-            for k, y in zip(arr.tolist(), yl):
+            values = arr.tolist() if hasattr(arr, "tolist") else arr
+            for k, y in zip(values, yl):
                 s[k] = s.get(k, 0) + 1
                 if y:
                     c[k] = c.get(k, 0) + 1
             out[name + "_s"], out[name + "_c"] = s, c
         return out
 
-    def _ctr5(self, ad_ids, cat_ids, ip_ids, dev_ids, hist, cnt) -> np.ndarray:
-        """[log HistCTR, log ad_ctr, log ip_ctr, log dev_ctr, log cat_ctr] (n,5)."""
+    def _ctr7(self, ad_ids, cat_ids, ip_ids, dev_ids, user_ids, hist, cnt) -> np.ndarray:
+        """[log HistCTR, log ad_ctr, log ip_ctr, log dev_ctr, log cat_ctr, log user_ctr, log user_cat_ctr]."""
         g, k = cnt["g"], self.config.k_smooth
         m = len(ad_ids)
-        rows = np.empty((m, 5), dtype=np.float32)
-        ad_l = ad_ids.tolist(); ca_l = cat_ids.tolist(); ip_l = ip_ids.tolist(); dv_l = dev_ids.tolist()
+        rows = np.empty((m, 7), dtype=np.float32)
+        ad_l = ad_ids.tolist(); ca_l = cat_ids.tolist(); ip_l = ip_ids.tolist(); dv_l = dev_ids.tolist(); us_l = user_ids.tolist()
         for i in range(m):
             rows[i, 0] = np.log(max(float(hist[i]), EPS))
             rows[i, 1] = np.log(_ctr(cnt["ad_s"], cnt["ad_c"], ad_l[i], g, k))
             rows[i, 2] = np.log(_ctr(cnt["ip_s"], cnt["ip_c"], ip_l[i], g, k))
             rows[i, 3] = np.log(_ctr(cnt["dv_s"], cnt["dv_c"], dv_l[i], g, k))
             rows[i, 4] = np.log(_ctr(cnt["ca_s"], cnt["ca_c"], ca_l[i], g, k))
+            rows[i, 5] = np.log(_ctr(cnt["us_s"], cnt["us_c"], us_l[i], g, k))
+            rows[i, 6] = np.log(_ctr(cnt["uc_s"], cnt["uc_c"], (us_l[i], ca_l[i]), g, k))
         return rows
 
     def _support_vec(self, ad_ids, user_ids, cnt) -> np.ndarray:
@@ -460,10 +521,10 @@ def _best_f1_topk(scores: np.ndarray, y: np.ndarray):
     return float(f1[j]), int(k[j])
 
 
-def _fit_f1_exponents(X: np.ndarray, y: np.ndarray, base=0.0, grid=None, n_pass: int = 15) -> np.ndarray:
+def _fit_f1_exponents(X: np.ndarray, y: np.ndarray, base=0.0, grid=None, n_pass: int = 4) -> np.ndarray:
     """좌표상승으로 ranking-F1 직접 최대화하는 비음 지수 w 적합. score = X@w + base."""
     if grid is None:
-        grid = np.arange(0.0, 3.05, 0.1)
+        grid = np.arange(0.0, 3.05, 0.5)
     nfeat = X.shape[1]
     w = np.ones(nfeat, dtype=np.float64)
     best = _best_f1_topk(X @ w + base, y)[0]
@@ -482,6 +543,28 @@ def _fit_f1_exponents(X: np.ndarray, y: np.ndarray, base=0.0, grid=None, n_pass:
         if not improved:
             break
     return w.astype(np.float32)
+
+
+def _sample_for_f1_fit(y: np.ndarray, max_rows: int, seed: int) -> np.ndarray:
+    if max_rows <= 0 or len(y) <= max_rows:
+        return np.arange(len(y))
+    rng = np.random.RandomState(seed)
+    pos = np.flatnonzero(y > 0.5)
+    neg = np.flatnonzero(y <= 0.5)
+    n_pos = min(len(pos), max_rows // 2)
+    n_neg = min(len(neg), max_rows - n_pos)
+    if n_pos + n_neg < max_rows:
+        extra = max_rows - (n_pos + n_neg)
+        if len(pos) - n_pos >= len(neg) - n_neg:
+            n_pos = min(len(pos), n_pos + extra)
+        else:
+            n_neg = min(len(neg), n_neg + extra)
+    take = np.concatenate([
+        rng.choice(pos, size=n_pos, replace=False) if n_pos else np.empty(0, dtype=int),
+        rng.choice(neg, size=n_neg, replace=False) if n_neg else np.empty(0, dtype=int),
+    ])
+    rng.shuffle(take)
+    return np.sort(take)
 
 
 def _l2_normalize(x: np.ndarray, eps: float = 1e-8) -> np.ndarray:
