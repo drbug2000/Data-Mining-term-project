@@ -277,7 +277,7 @@ FEATURE_NAMES = ("logHist", "ad_ctr", "ip_ctr", "dev_ctr", "cat_ctr",
 
 FITTED_WEIGHTS = np.array([1.0, 1.0, 1.0, 2.5, 1.0, 1.0, 1.0, 3.0, 1.0], dtype=np.float64)
 
-BLEND_ALPHA = 0.2   # alpha in Eq. (2): score = z(content) + alpha * z(s_LL)
+BLEND_ALPHA = 0.2   # alpha in Eq. (2): score = z(content-strong) + alpha * z(s_LL)
 
 
 def boosted_score(x: np.ndarray, content: np.ndarray, base: np.ndarray,
@@ -285,7 +285,7 @@ def boosted_score(x: np.ndarray, content: np.ndarray, base: np.ndarray,
                   z_ll_mean: float, z_ll_sd: float,
                   weights: np.ndarray = FITTED_WEIGHTS,
                   alpha: float = BLEND_ALPHA) -> np.ndarray:
-    """Eq. (2): score = z(content) + alpha * z(s_LL).
+    """Eq. (2): score = z(content-strong) + alpha * z(s_LL).
 
     x       : feature matrix (N, 9)
     content : content head scores (N,)  — column 8 of x, extracted for z-scoring

@@ -1,6 +1,6 @@
 """Dataset loader for the AI506 ad recommendation task.
 
-Directory layout (../../../datasets/ by default):
+Directory layout:
     searchinfo.csv              SearchID, UserID, IPID, IsUserLoggedOn, CategoryID
     searchinfo_text_embs.npy    (N_searches, 384)
     adinfo.csv                  AdID, CategoryID, Price
@@ -18,13 +18,33 @@ Directory layout (../../../datasets/ by default):
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import os
 from pathlib import Path
 from typing import Iterator
 
 import numpy as np
 import pandas as pd
 
-_DEFAULT_DIR = Path(__file__).resolve().parents[3] / "../datasets"
+_SUBMISSION_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _default_dataset_dir() -> Path:
+    env = os.environ.get("DATASET_DIR")
+    if env:
+        return Path(env)
+
+    candidates = [
+        _SUBMISSION_ROOT / "datasets",
+        _SUBMISSION_ROOT.parent / "datasets",
+        _SUBMISSION_ROOT.parent.parent / "datasets",
+    ]
+    for candidate in candidates:
+        if (candidate / "searchinfo.csv").exists():
+            return candidate
+    return candidates[0]
+
+
+_DEFAULT_DIR = _default_dataset_dir()
 
 
 @dataclass

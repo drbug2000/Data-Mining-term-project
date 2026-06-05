@@ -1,17 +1,18 @@
 """Generate click_test_answer.csv for Task 1 submission.
 
 Pipeline (mirrors the submitted model exactly):
-  1. Train 30-seed content head ensemble on internal-train split.
+  1. Train the content head ensemble on the internal-train split.
   2. Build SKNCP index from full training data (K=200).
   3. Compute SKNCP + 9-feature matrix for test rows.
   4. Apply fitted weights (coordinate-ascent F1 objective, internal-val only).
-  5. Boost: score = z(content) + 0.2 * z(s_LL)   [Eq. 2 in report]
+  5. Boost: score = z(content-strong) + 0.2 * z(s_LL)   [Eq. 2 in report]
   6. Threshold: top 1.11% = train click rate.
 
-Output: click_test_answer.csv  (columns: SearchID, AdID, IsClick)
+Output: click_test_answer.csv at the submission root
+        (columns: SearchID, AdID, IsClick)
 
 Run:
-    python predict_test.py [--dataset-dir PATH]
+    python predict_test.py --dataset-dir /path/to/datasets
 """
 
 from __future__ import annotations
@@ -42,16 +43,17 @@ from content_head import train_ensemble
 K_SKNCP = 200
 N_SEEDS = 30
 
-DATASET_DIR = Path(__file__).resolve().parents[3] / "../datasets"
-OUT_CSV = Path(__file__).resolve().parents[3] / "click_test_answer.csv"
+SUBMISSION_ROOT = Path(__file__).resolve().parents[2]
+OUT_CSV = SUBMISSION_ROOT / "click_test_answer.csv"
 
 
-def main(dataset_dir: Path = DATASET_DIR) -> None:
+def main(dataset_dir: Path | None = None) -> None:
     t0 = time.time()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
-    ds = RecoDataset(dataset_dir).load()
+    ds = RecoDataset(dataset_dir) if dataset_dir is not None else RecoDataset()
+    ds = ds.load()
     import pandas as _pd
     si = _pd.read_csv(ds.dir / "searchinfo.csv")
     ui = _pd.read_csv(ds.dir / "userinfo.csv")
@@ -94,7 +96,7 @@ def main(dataset_dir: Path = DATASET_DIR) -> None:
     skncp_val = compute_skncp(train["Q"][mask_val], train["A"][mask_val], idx_tr, K_SKNCP)
     skncp_test = compute_skncp(test["Q"], test["A"], idx_full, K_SKNCP)
 
-    # Content head ensemble (30 seeds)
+    # Content head ensemble.
     print(f"Training content head ({N_SEEDS} seeds)...")
     [con_val, con_test] = train_ensemble(
         train["Q"][mask_tr], train["A"][mask_tr], y[mask_tr].astype(np.int8),
@@ -141,6 +143,8 @@ def main(dataset_dir: Path = DATASET_DIR) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset-dir", type=Path, default=DATASET_DIR)
+    parser.add_argument("--dataset-dir", type=Path, default=None,
+                        help="Directory containing the provided dataset files. "
+                             "If omitted, DATASET_DIR env var and nearby datasets/ folders are tried.")
     args = parser.parse_args()
     main(args.dataset_dir)

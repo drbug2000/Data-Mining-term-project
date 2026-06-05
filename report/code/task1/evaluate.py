@@ -3,16 +3,15 @@
 Two modes:
   --frozen   Use the frozen content-score cache included with the submission.
              Exactly reproduces the reported F1=0.1109 (deterministic).
-             Requires: ../../m06_skncp/results/cs_cache.npz
-                     (relative to this file: report/code/task1/)
+             Requires: code/task1/cs_cache.npz in the submission package.
 
-  --retrain  Retrain the content head (30 seeds) fresh, then score.
+  --retrain  Retrain the content head fresh, then score.
              Result will be in the bootstrap CI [0.067, 0.144]; point F1
              may differ slightly from 0.1109 due to stochastic training.
 
 Run:
-    python evaluate.py --frozen
-    python evaluate.py --retrain
+    python evaluate.py --frozen --dataset-dir /path/to/datasets
+    python evaluate.py --retrain --dataset-dir /path/to/datasets
 """
 
 from __future__ import annotations
@@ -48,16 +47,16 @@ from content_head import train_ensemble
 K_SKNCP = 200
 N_SEEDS = 30
 
-DATASET_DIR = Path(__file__).resolve().parents[3] / "../datasets"
 FROZEN_CACHE = Path(__file__).resolve().parent / "cs_cache.npz"
 
 
-def run(dataset_dir: Path, use_frozen: bool) -> dict:
+def run(dataset_dir: Path | None, use_frozen: bool) -> dict:
     t0 = time.time()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}  mode={'frozen-cache' if use_frozen else 'retrain'}")
 
-    ds = RecoDataset(dataset_dir).load()
+    ds = RecoDataset(dataset_dir) if dataset_dir is not None else RecoDataset()
+    ds = ds.load()
     si = pd.read_csv(ds.dir / "searchinfo.csv")
     ui = pd.read_csv(ds.dir / "userinfo.csv")
     sid2ip = dict(zip(si["SearchID"], si["IPID"]))
@@ -165,6 +164,8 @@ if __name__ == "__main__":
                        help="Use frozen cs_cache.npz (deterministic)")
     group.add_argument("--retrain", action="store_true",
                        help="Retrain content head (stochastic, ~3 min on GPU)")
-    parser.add_argument("--dataset-dir", type=Path, default=DATASET_DIR)
+    parser.add_argument("--dataset-dir", type=Path, default=None,
+                        help="Directory containing the provided dataset files. "
+                             "If omitted, DATASET_DIR env var and nearby datasets/ folders are tried.")
     args = parser.parse_args()
     run(args.dataset_dir, use_frozen=args.frozen)
