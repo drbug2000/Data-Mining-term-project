@@ -33,6 +33,7 @@ from models.m06_skncp.experiments.task1_skncp_model6 import (
     OUT_DIR,
     _bootstrap_f1,
     _build_skncp_index,
+    _cohens_d,
     _collect_external,
     _collect_train,
     _ctr_series,
@@ -242,6 +243,10 @@ def main() -> None:
             "external_ctr": float(y_external.mean()),
             "skncp_internal_auc": _binary_auc(skncp_val, y_val),
             "skncp_external_auc": _binary_auc(skncp_external, y_external),
+            "boosted_d_internal_val": _cohens_d(boosted_val, y_val),
+            "boosted_d_external": _cohens_d(boosted_external, y_external),
+            "skncp_d_internal_val": _cohens_d(skncp_val, y_val),
+            "skncp_d_external": _cohens_d(skncp_external, y_external),
         },
         "leak_audit": (
             "Weights use sorted internal 80/20 only. Internal CTR/SKNCP use "
