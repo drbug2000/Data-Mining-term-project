@@ -1,0 +1,544 @@
+% AI506 Data Mining and Search (Spring 2026)
+% Term Project Final Report
+% Single-file LaTeX report based on the provided ACM template.
+
+\documentclass[sigconf, nonacm]{acmart}
+\usepackage{graphicx}
+\usepackage{balance}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{tikz}
+\usetikzlibrary{positioning, arrows.meta, shapes.geometric}
+\usepackage{subcaption}
+\usepackage{float}
+\usepackage{amsmath}
+\setlength{\emergencystretch}{3em}
+\tolerance=1000
+\hbadness=10000
+
+\settopmatter{printacmref=false}
+\renewcommand\footnotetextcopyrightpermission[1]{}
+\pagestyle{plain}
+
+\begin{document}
+
+\newcommand{\bit}{\begin{itemize}}
+\newcommand{\eit}{\end{itemize}}
+
+\title{AI506 Term Project -- Final Report}
+
+\author{Sangjune Kim}
+\affiliation{\institution{KAIST}\city{Daejeon}\state{South Korea}}
+\author{Gyuchan An}
+\affiliation{\institution{KAIST}\city{Daejeon}\state{South Korea}}
+\author{Minseo Kang}
+\affiliation{\institution{KAIST}\city{Daejeon}\state{South Korea}}
+
+\begin{abstract}
+We study advertisement click behavior in a real-world search-log dataset
+through two prediction tasks. Task~1 (click prediction) is an extremely
+imbalanced binary classification problem (click rate $\approx 1.1\%$) whose
+validation set is dominated by cold users; Task~2 (ad prediction) is a
+zero-history retrieval problem ranking the clicked ad among $17{,}518$
+candidates. For Task~1 we show that the direct text similarity between a
+query and a displayed ad barely separates clicks from non-clicks, and we
+instead exploit a collaborative signal we call \emph{Semantic K-Nearest-Neighbor
+Click Prediction} (SKNCP): we look up the ads that were clicked by the most
+similar past queries and measure how similar the current ad is to them. We
+empirically validate the smoothness assumption that this signal relies on
+(similar queries click on similar ads), combine SKNCP with trusted
+click-through-rate (CTR) features and a click-tuned text-matching score in an
+F1-optimized log-linear model, and reach a clicked-class F1 of $0.1109$ on the
+external validation set, exceeding the provided baseline ($0.0436$) by
+$+154\%$. For Task~2 we represent queries, ads, and users in a shared text
+embedding space and maintain multiple per-user interest vectors updated online;
+this reaches NDCG@3 $=0.1228$, improving over a text-similarity-only baseline by
+$+24\%$. All model selection uses only an internal split of the training data;
+the external validation labels are used solely for final measurement.
+\end{abstract}
+\maketitle
+
+\section{Introduction}
+\label{sec:intro}
+
+Online advertising platforms select advertisements based on search queries,
+user context, and ad metadata, and a user's click is a sparse but direct signal
+of interest. In this project we study this setting through two related
+prediction tasks defined over the same real-world search-log dataset. The two
+tasks are formally distinct and require independent submissions; accordingly our
+work proceeds along two parallel tracks with task-specific models motivated by
+separate exploratory findings.
+
+\subsection{Problem Definition}
+
+\paragraph{Common notation.}
+Let $\mathcal{U}$, $\mathcal{S}$, and $\mathcal{A}$ denote the sets of users,
+search events, and advertisements. For a search event $s\in\mathcal{S}$, let
+$u_s\in\mathcal{U}$ be the issuing user, $x_s\in\mathbb{R}^d$ its
+\emph{query embedding}, and for an ad $a\in\mathcal{A}$ let $z_a\in\mathbb{R}^d$
+be its \emph{ad-title embedding}, with $d=384$. Embeddings are precomputed with
+a pretrained sentence encoder (MiniLM) and are \emph{frozen}. The training log
+is a set of displayed-ad impressions
+$\{(s_i,u_{s_i},a_i,r_i,h_i,y_i)\}_{i=1}^{N}$ with $N=320{,}000$, where
+$r_i$ is the display position, $h_i$ the engine-provided historical CTR, and
+$y_i\in\{0,1\}$ the click label.
+
+\paragraph{Terms used throughout (defined once here).}
+\bit
+\item \textbf{CTR} (click-through rate): fraction of impressions that are
+clicked. The \emph{global} training CTR is $\mu\approx0.0111$.
+\item \textbf{HistCTR} $h_{s,a}$: the historical CTR estimate \emph{supplied by
+the search engine} for the displayed (ad, position); an input feature, not
+computed by us.
+\item \textbf{Smoothed entity CTR}: for an entity key $g$ (an AdID, IPID,
+device, or category), the train-only Laplace-smoothed click rate
+$\mathrm{ctr}(g)=\big(\mathrm{clicks}(g)+k\mu\big)/\big(\mathrm{count}(g)+k\big)$
+with $k=20$; unseen keys fall back to $\mu$.
+\item \textbf{Internal split / external validation.} \emph{All} model choices
+(features, hyper-parameters, decision thresholds) are made on an
+\emph{internal} split of the 320k training log: we sort by SearchID and use the
+first $80\%$ ($256{,}157$ rows) as internal-train and the last $20\%$
+($63{,}843$ rows) as internal-validation. The \emph{external validation} set is
+the separately provided \texttt{click\_validation} file ($20{,}000$
+impressions); it is held out and used \emph{only} to report final F1/AUC. Its
+labels are never used for any selection (doing so would be ``oracle''
+information leakage).
+\item \textbf{Evaluation.} Task~1 uses clicked-class
+$F_1=2\,\mathrm{TP}/(2\,\mathrm{TP}+\mathrm{FP}+\mathrm{FN})$; Task~2 uses
+NDCG@3. \emph{Cohen's $d$} denotes a standardized mean difference (effect size).
+\item Task-specific terms (\emph{SKNCP}, \emph{smoothness assumption},
+\emph{content score}, \emph{multi-interest}, \emph{IPS position correction}) are
+defined formally where first used, in Sections~\ref{sec:task1} and
+\ref{sec:task2}.
+\eit
+
+\paragraph{Task 1: Click Prediction.}
+\bit
+\item \textbf{GIVEN:} a displayed-ad impression $(s,a)$ with search-event ID,
+ad ID, position $r_{s,a}$, and HistCTR $h_{s,a}$.
+\item \textbf{FIND:} a binary prediction $\hat{y}_{s,a}\in\{0,1\}$ of whether $a$
+is clicked in $s$.
+\item \textbf{TO MAXIMIZE:} clicked-class $F_1$.
+\eit
+
+\paragraph{Task 2: Ad Prediction.}
+\bit
+\item \textbf{GIVEN:} a search event $s$ whose clicked ad is hidden, plus user,
+search-context, ad metadata, and the query/ad embeddings.
+\item \textbf{FIND:} three distinct ads ranked by likelihood of being the
+clicked ad.
+\item \textbf{TO MAXIMIZE:} NDCG@3.
+\eit
+The candidates are the full pool of $17{,}518$ ads.
+
+\subsection{EDA Findings and Task Separation}
+
+Table~\ref{tab:eda-summary} collects the statistics that drive our design.
+
+\begin{table}[H]
+\centering
+\caption{Exploratory statistics motivating the design choices.}
+\label{tab:eda-summary}
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lr}
+\toprule
+Quantity & Value \\
+\midrule
+Training impressions / clicks / CTR & 320{,}000 / 3{,}560 / 1.11\% \\
+External validation impressions / clicks / CTR & 20{,}000 / 229 / 1.15\% \\
+Train$\,\cap\,$external SearchID overlap & 1 ($\approx$0.01\%) \\
+Cold users in click-prediction validation & $\approx$29\% \\
+Click rate at position 1 vs.\ 7 & 1.29\% / 0.71\% \\
+Non-logged-in vs.\ logged-in click rate & 1.20\% / 0.99\% \\
+Ads per search (1 / 2) & 57\% / 43\% \\
+Task~1 direct query--ad cosine (clicked vs.\ non) & Cohen's $d\!\approx\!0.04$ \\
+Task~2 query--(clicked vs.\ random) ad cosine & Cohen's $d\!\approx\!1.56$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Three properties matter most. (i) \emph{Clicks are extremely rare} (1.11\%),
+so clicked-class F1 is dominated by where the rare positives land at the top of
+the ranking, not by overall accuracy. (ii) \emph{The validation set is a cold,
+new-session regime}: external SearchIDs essentially never appear in training
+($1$ overlap) and $\approx29\%$ of validation users are unseen, so
+session-memorizing or user-specific features do not transfer. (iii) \emph{Text
+similarity behaves very differently in the two tasks}, and this distinction is
+central to our Task~1 design. In Task~2 the relevant comparison is
+\emph{clicked ad vs.\ a random ad} for the same query: clicked ads are much more
+query-similar than random ones (Cohen's $d\!\approx\!1.56$), so embedding
+similarity is a strong retrieval signal. In Task~1 the relevant comparison is
+\emph{clicked vs.\ non-clicked among the already-displayed ads}: here the direct
+query--ad cosine barely separates the two classes (Cohen's $d\!\approx\!0.04$),
+because the displayed ads are already topically plausible. Task~1 therefore
+needs a signal beyond direct text similarity, which motivates the collaborative
+SKNCP signal in Section~\ref{sec:task1}.
+
+These observations yield two qualitatively different problems. Task~1 is a
+class-imbalanced classification problem over cold entities with at most two ads
+per search (so within-search ranking structure is weak). Task~2 is a
+zero-history retrieval problem in which the only signal that generalizes is the
+shared embedding space. We address them with independent task-specific models.
+
+\section{Task 1: Click Prediction}
+\label{sec:task1}
+
+\subsection{Motivation: from failed direct similarity to SKNCP}
+
+A natural idea is to score an impression by the cosine similarity
+$\cos(x_s,z_a)$ between the query and ad embeddings. As noted above, this fails
+for Task~1: among displayed impressions the clicked and non-clicked classes are
+nearly indistinguishable in direct cosine (Cohen's $d\!\approx\!0.04$, external
+AUC $\approx0.52$--$0.54$). Clicks do not happen because the texts look alike;
+they happen because the user \emph{wants} the ad.
+
+We therefore reference \emph{what similar users actually clicked}. We define the
+\textbf{Semantic K-Nearest-Neighbor Click Prediction} (SKNCP) signal:
+\begin{equation}
+\mathrm{SKNCP}(s,a)=
+\max_{a'\in\mathcal{C}_K(s)} \cos(z_a, z_{a'}),
+\label{eq:skncp}
+\end{equation}
+where $\mathcal{C}_K(s)$ is the set of ads that were \emph{clicked} in the $K$
+training search events whose query embeddings are most similar to $x_s$. In
+words: ``find the $K$ past searches most like this one, collect the ads those
+searches clicked, and measure how similar the current ad is to the closest of
+them.''
+
+\paragraph{Empirical justification.}
+SKNCP relies on a \emph{smoothness assumption}: \emph{semantically similar
+queries click on similar ads}. We validate this directly. Sampling
+$\approx30{,}000$ click pairs and binning by query--query similarity, the
+average similarity between their clicked ads increases monotonically with query
+similarity (Figure~\ref{fig:smoothness}, Pearson $r=0.336$); the reverse
+direction (binning by clicked-ad similarity and measuring query similarity)
+gives the same effect ($r=0.341$). The query space and the clicked-ad space
+thus move together (a joint structure), which is exactly the condition a
+$K$-NN approach needs. We then verify that the resulting signal is strong: for
+$2{,}000$ clicked samples, the max cosine between the current clicked ad and the
+clicked ads of its $K{=}100$ most similar queries is $0.884$, versus $0.677$ for
+random ads (Figure~\ref{fig:knn}, Cohen's $d=1.27$). End to end, replacing the
+direct similarity (Cohen's $d=0.04$) by SKNCP yields an $11\times$ stronger
+click signal (Cohen's $d=0.44$).
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.92\columnwidth]{fig_smoothness.png}
+\caption{Smoothness assumption. As query--query embedding similarity increases,
+the similarity between the ads those queries clicked increases monotonically
+($r=0.336$; the reverse direction gives $r=0.341$).}
+\Description{Bar chart: clicked-ad similarity rises across query-similarity bins.}
+\label{fig:smoothness}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.66\columnwidth]{fig_knn_validity.png}
+\caption{K-NN signal validity. The clicked ad is far more similar to the clicked
+ads of similar queries (0.884) than to random ads (0.677), Cohen's $d=1.27$.}
+\Description{Two bars showing SKNCP similarity 0.884 vs random 0.677.}
+\label{fig:knn}
+\end{figure}
+
+SKNCP alone is nevertheless a \emph{weak} stand-alone classifier
+(Section~\ref{sec:task1-results}): its index only contains ads that were
+actually clicked in training ($\approx1{,}759$ ads, $\approx67\%$ coverage), so
+it cannot score impressions whose neighborhood is empty. We therefore use SKNCP
+as a collaborative-filtering \emph{feature} that complements the sparse trusted
+CTR signals, not as a model by itself.
+
+\subsection{Methodology}
+
+\paragraph{Signals.}
+The model combines, in a log-odds (naive-Bayes) sum, signals that are each
+justified by the EDA: (1) $\log$ HistCTR, the supplied prior; (2--5) the
+$\log$ of smoothed AdID, IPID, device, and category CTRs (defined in
+Section~\ref{sec:intro}); (6) an \emph{IPS position correction}
+$\log(\mathrm{ctr}(\text{pos})/\mu)$ that removes the placement bias measured in
+Table~\ref{tab:eda-summary} (position~1 vs.\ 7); (7) the within-search HistCTR
+\emph{rank}; (8) SKNCP from Eq.~\eqref{eq:skncp}; and (9) a click-tuned
+\emph{content score}. The content score is the cosine of two learned linear
+projections of $x_s$ and $z_a$, trained on clicks with a class-balanced
+cross-entropy and averaged over $10$ seeds; unlike the raw cosine it is
+discriminative (external AUC $0.68$). A fixed multiplicative login term
+$\log(1.7)$ is added for non-logged-in rows (EDA: their CTR is higher).
+
+\paragraph{Fitting (F1-objective, leak-free).}
+We weight the signals to directly maximize clicked-class F1 by
+\emph{coordinate ascent}: each weight is swept over a grid while the others are
+held fixed, choosing the value that maximizes top-$k$ F1 on the
+internal-validation split, cycling until convergence. This optimizes the metric
+of interest rather than log-loss, which is dominated by the abundant negatives.
+All smoothed CTRs and the SKNCP index are built from internal-train only when
+scoring internal-validation, and from the full training log when scoring
+external validation, so a row never sees its own label.
+
+\paragraph{Final model: SKNCP-boosted content score.}
+Because the content score has the best stand-alone ranking quality
+(external AUC $0.713$) while SKNCP, CTR, position and rank refine the very top of
+the list, the final score blends the two in standardized ($z$-scored) space:
+\begin{equation}
+\mathrm{score}(s,a)= z\!\big(\mathrm{content}\big) + \alpha\, z\!\big(m_6\big),
+\quad \alpha=0.2,
+\label{eq:boost}
+\end{equation}
+where $m_6$ is the F1-fit log-linear combination of signals (1)--(9) above
+(SKNCP carries the largest weight, $3.0$). The neighborhood size $K{=}200$ and
+the blend weight $\alpha{=}0.2$ are fixed a-priori constants (not tuned on
+external labels). Predictions take the top fraction of scores equal to the
+training click rate ($1.11\%$); this threshold uses no external labels.
+Figure~\ref{fig:task1-pipeline} summarizes the pipeline.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+    node distance=5.0mm,
+    box/.style={rectangle, rounded corners, draw=black, align=center,
+        minimum width=0.86\columnwidth, minimum height=7mm, font=\scriptsize},
+    arrow/.style={-{Latex[length=1.6mm]}, thick}]
+\node[box] (idx) {\textbf{Training log only}\\ smoothed CTR maps ($k{=}20$) \;+\; clicked-query SKNCP index ($K{=}200$)};
+\node[box, below=of idx] (feat) {\textbf{Per-impression signals}\\ $\log$HistCTR,\ ad/ip/device/category CTR,\ IPS$_{\text{pos}}$,\ rank,\ SKNCP,\ content};
+\node[box, below=of feat] (fit) {\textbf{F1-objective coordinate ascent} (internal-val)\\ log-linear $m_6$ \;(+ $\log 1.7\cdot[\text{not logged in}]$)};
+\node[box, below=of fit] (blend) {\textbf{Boost blend}\quad $z(\text{content}) + 0.2\, z(m_6)$};
+\node[box, below=of blend] (thr) {\textbf{Threshold} = top $1.11\%$ (training click rate; no external labels)};
+\node[box, below=of thr] (out) {\textbf{Submission}\quad \texttt{SearchID, AdID, IsClick}};
+\draw[arrow](idx)--(feat);\draw[arrow](feat)--(fit);\draw[arrow](fit)--(blend);
+\draw[arrow](blend)--(thr);\draw[arrow](thr)--(out);
+\end{tikzpicture}
+\caption{Final Task~1 pipeline: SKNCP-boosted content score with an F1-optimized
+log-linear combination of trusted CTR, position, rank, and SKNCP signals.}
+\Description{Vertical flowchart of the SKNCP-boosted Task 1 pipeline.}
+\label{fig:task1-pipeline}
+\end{figure}
+
+\subsection{Results}
+\label{sec:task1-results}
+
+Table~\ref{tab:task1-results} reports external-validation performance. All
+thresholds and weights are chosen on the internal split; the external labels are
+used only for measurement. SKNCP alone is weak (F1 $0.027$), confirming it is a
+complementary feature rather than a classifier. The trusted content score alone
+already reaches F1 $0.106$. The final SKNCP-boosted model attains
+$F_1=0.1109$ (AUC $0.713$), a $+154\%$ relative improvement over the provided
+baseline ($0.0436$). A $2000$-resample bootstrap gives a mean F1 of $0.104$ with
+a wide $95\%$ confidence interval $[0.067,0.144]$, reflecting the $229$ positive
+labels; differences below $\approx0.04$ are therefore within sampling noise, and
+we report AUC as the more stable ranking metric.
+
+\begin{table}[t]
+\centering
+\caption{Task~1 external validation (clicked-class F1). Threshold = training
+click rate unless noted; the oracle row uses the external-optimal cut and is for
+reference only (not submittable).}
+\label{tab:task1-results}
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lcccc}
+\toprule
+Configuration & F1 & Prec. & Recall & AUC \\
+\midrule
+Provided baseline (HistCTR$>$0.01) & 0.0436 & --- & --- & --- \\
+HistCTR only & 0.064 & --- & --- & 0.685 \\
+SKNCP only & 0.027 & --- & --- & 0.573 \\
+Content score only & 0.106 & 0.073 & 0.196 & 0.713 \\
+\textbf{SKNCP-boosted (final)} & \textbf{0.1109} & 0.113 & 0.109 & 0.713 \\
+\midrule
+\textit{oracle threshold (reference)} & 0.111 & --- & --- & 0.713 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A stratification of the validation users by their training history makes the
+role of each component concrete: on \emph{warm} users (with click history,
+$21\%$) the model is strongest (F1 $0.12$); on \emph{cold} users (unseen,
+$29\%$) the trusted CTRs are uninformative and the click-tuned content score
+carries the prediction (F1 $0.11$); the largest, hardest stratum is
+search-history-only users ($49\%$), where ranking quality is high (AUC $0.73$)
+but the positives are hard to push above the global threshold. This is the
+empirical reason the final model needs both a generalizing semantic signal and
+the SKNCP/CTR refinement.
+
+\section{Task 2: Ad Prediction}
+\label{sec:task2}
+
+\subsection{Motivation and Approach}
+
+The proposed method is motivated by a key property of the dataset: both search
+queries and advertisement titles are natural-language text. Because queries and
+ads share the same modality, they are encoded by the same pretrained text
+embedding model and live in a unified semantic space. EDA supports this: the
+cosine similarity between a query and its \emph{clicked} ad is substantially
+higher than to a \emph{random} ad (Cohen's $d\approx1.56$), so embedding
+similarity is a strong relevance signal for retrieval. (This is the opposite of
+the Task~1 finding, because Task~2 compares clicked vs.\ random ads, whereas
+Task~1 compares clicked vs.\ non-clicked \emph{displayed} ads.)
+
+However, query similarity alone cannot model personalized preference: two users
+issuing the same query may prefer different ads, and a user typically has
+multiple distinct interests that a single vector cannot capture. We therefore
+adopt a \emph{multi-interest} representation: each user is represented by several
+interest vectors, each capturing a different facet of preference, updated online
+from streaming search and click events. Keeping all representations in the same
+embedding space lets the model compare queries, ads, and interests by cosine
+alone, with no learned compatibility layer.
+
+\subsection{Methodology}
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=1\linewidth]{figure 1.png}
+    \caption{Task~2 multi-interest model architecture.}
+    \label{fig:task2-arch}
+\end{figure}
+The framework has three parts: a shared text-embedding space, online
+multi-interest updating, and hybrid relevance scoring. Each user maintains
+several interest vectors initialized to random unit vectors so that different
+vectors specialize over time. On each interaction, the incoming embedding
+updates the interest vectors by a \emph{soft assignment}: vectors more similar to
+the embedding receive larger updates. Search events get a small update weight
+(temporary intent), clicked ads a large one (strong preference); optionally,
+non-clicked ads apply small negative updates. At recommendation time the score of
+a candidate ad combines two signals: the cosine between the current query and the
+ad (immediate intent), and the cosine between the ad and the most relevant user
+interest vector (long-term preference), combined by a weighted sum. Cold users
+without click history fall back to query--ad similarity until enough behavioral
+evidence accumulates.
+
+\subsection{Results}
+
+\paragraph{Setup.} We stream $320{,}000$ (search, ad, click) triples in
+chronological order. Evaluation uses \texttt{ad\_validation}: $214$ queries, one
+ground-truth ad each, ranked against all $17{,}518$ candidates.
+
+\paragraph{Baselines.}
+\bit
+  \item \textbf{Random}: uniform random score.
+  \item \textbf{HistCTR}: rank by historical CTR within category (official
+        baseline).
+  \item \textbf{Query-only} ($\gamma\!=\!0$): pure query--ad text similarity, no
+        user interest.
+\eit
+
+\begin{table}[h]
+\centering
+\caption{Ad recommendation results (NDCG@3).}
+\label{tab:results}
+\small
+\begin{tabular}{lcc}
+\toprule
+Method & NDCG@3 & Rank-1 hits \\
+\midrule
+Random & 0.0008 & 0 \\
+HistCTR (baseline) & 0.0211 & 2 \\
+Query-only ($\gamma\!=\!0$) & 0.0989 & 14 \\
+\textbf{MultiInterest (ours)} & \textbf{0.1228} & \textbf{17} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]
+\centering
+\caption{Rank distribution of ground-truth ads ($n\!=\!214$).}
+\label{tab:rankdist}
+\small
+\begin{tabular}{lrc}
+\toprule
+Rank & Count & NDCG weight \\
+\midrule
+1 & 17 & 1.000 \\
+2 & 6 & 0.631 \\
+3 & 2 & 0.500 \\
+$>3$ & 189 & 0.000 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The query-only baseline already surpasses HistCTR by $4.7\times$, confirming that
+text-embedding similarity is the dominant relevance signal for this task. Adding
+the multi-interest term yields a further $+24\%$ relative improvement
+($0.0989\!\to\!0.1228$), showing that personalized preference provides
+complementary signal beyond immediate query intent.
+
+\section{Conclusion}
+\label{sec:conclusions}
+
+We presented two methodologically independent, EDA-aligned models for the same
+advertising search log. For Task~1, the key insight is that direct query--ad
+text similarity is uninformative among displayed impressions (Cohen's
+$d\!\approx\!0.04$), whereas a collaborative signal that references the ads
+clicked by semantically similar past queries (SKNCP) is an order of magnitude
+stronger ($d\!=\!0.44$); we validated the underlying smoothness assumption
+directly and combined SKNCP with trusted CTR, position-bias-corrected, and
+click-tuned content signals in an F1-optimized log-linear model, reaching a
+clicked-class F1 of $0.1109$ ($+154\%$ over the provided baseline), with all
+selection performed on an internal split and external labels reserved for final
+measurement. For Task~2, representing queries, ads, and users in a shared text
+embedding space and maintaining online multi-interest vectors reaches NDCG@3
+$=0.1228$, a $+24\%$ improvement over a strong text-similarity baseline. Across
+both tasks the shared embedding space is the signal that generalizes to the cold,
+new-session evaluation regime, but the two tasks exploit it differently: Task~2
+uses it directly for retrieval, while Task~1 must route it through the
+collaborative SKNCP signal because direct similarity does not separate clicks
+among already-displayed ads. The dominant residual limitation is the scarcity of
+positive labels ($229$ on the click-prediction validation set), which makes
+small F1 differences statistically indistinguishable and motivates reporting AUC
+alongside F1.
+
+\bibliographystyle{plain}
+\begin{thebibliography}{9}
+
+\bibitem{ke2017lightgbm}
+G.~Ke, Q.~Meng, T.~Finley, T.~Wang, W.~Chen, W.~Ma, Q.~Ye, and T.-Y.~Liu.
+\newblock LightGBM: A Highly Efficient Gradient Boosting Decision Tree.
+\newblock In \textit{NeurIPS}, 2017.
+
+\bibitem{mcmahan2013}
+H.~B.~McMahan et al.
+\newblock Ad Click Prediction: A View from the Trenches.
+\newblock In \textit{KDD}, 2013.
+
+\bibitem{reimers2019sbert}
+N.~Reimers and I.~Gurevych.
+\newblock Sentence-BERT: Sentence Embeddings using Siamese BERT-Networks.
+\newblock In \textit{EMNLP-IJCNLP}, 2019.
+
+\bibitem{khandelwal2020knnlm}
+U.~Khandelwal, O.~Levy, D.~Jurafsky, L.~Zettlemoyer, and M.~Lewis.
+\newblock Generalization through Memorization: Nearest Neighbor Language Models.
+\newblock In \textit{ICLR}, 2020.
+
+\bibitem{li2019mind}
+C.~Li et al.
+\newblock Multi-Interest Network with Dynamic Routing for Recommendation at
+Tmall.
+\newblock In \textit{CIKM}, 2019.
+
+\end{thebibliography}
+
+\newpage
+\appendix
+\section{Appendix}
+
+\subsection{Labor Division}
+\bit
+\item Dataset audit and consolidation of EDA findings
+      [Sangjune Kim, Gyuchan An, Minseo Kang].
+\item Task~1 SKNCP model: motivation analysis, feature design, F1-objective
+      fitting, leak-free validation [Gyuchan An].
+\item Task~2 multi-interest model: design, streaming update logic, validation
+      [Sangjune Kim].
+\item Report integration, template formatting, and consistency checks
+      [Minseo Kang].
+\eit
+
+\subsection{Full Disclosure}
+\paragraph{Sangjune Kim.} Nothing to disclose.
+\paragraph{Gyuchan An.} Nothing to disclose.
+\paragraph{Minseo Kang.} Nothing to disclose.
+\paragraph{Use of LLM assistance.}
+Large language models (ChatGPT, Claude) were used for LaTeX editing, wording
+refinement, and organization of experimental findings. All experiments,
+numerical results, modeling decisions, and final submissions were produced and
+verified by the team.
+
+\end{document}
