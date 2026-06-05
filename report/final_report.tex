@@ -220,27 +220,34 @@ gives the same effect ($r=0.341$). The query space and the clicked-ad space
 thus move together (a joint structure), which is exactly the condition a
 $K$-NN approach needs. We then verify that the resulting signal is strong: for
 $2{,}000$ clicked samples, the max cosine between the current clicked ad and the
-clicked ads of its $K{=}100$ most similar queries is $0.884$, versus $0.677$ for
-random ads (Figure~\ref{fig:knn}, Cohen's $d=1.27$). End to end, replacing the
-direct similarity (Cohen's $d=0.04$) by SKNCP yields an $11\times$ stronger
-click signal (Cohen's $d=0.44$).
+clicked ads of its $K{=}100$ most similar queries averages $0.879$, versus
+$0.674$ for random ads (Figure~\ref{fig:knn}a, Cohen's $d=1.27$), and a per-click
+paired comparison shows SKNCP exceeding the random baseline for $\approx80\%$ of
+clicks (Figure~\ref{fig:knn}b). End to end, replacing the direct similarity
+(Cohen's $d=0.04$) by SKNCP yields an $11\times$ stronger click signal (Cohen's
+$d=0.44$).
 
 \begin{figure}[t]
 \centering
-\includegraphics[width=0.92\columnwidth]{fig_smoothness.png}
-\caption{Smoothness assumption. As query--query embedding similarity increases,
-the similarity between the ads those queries clicked increases monotonically
-($r=0.336$; the reverse direction gives $r=0.341$).}
-\Description{Bar chart: clicked-ad similarity rises across query-similarity bins.}
+\includegraphics[width=0.82\columnwidth]{evidence_1.png}
+\caption{Smoothness assumption (Evidence~1). Each point is a click pair: as the
+query--query embedding similarity grows, the similarity between the ads those
+queries clicked grows monotonically (binned means and linear fit, $r=0.336$; the
+reverse direction gives $r=0.341$).}
+\Description{Scatter of click pairs with a positive linear fit of clicked-ad
+similarity against query similarity.}
 \label{fig:smoothness}
 \end{figure}
 
 \begin{figure}[t]
 \centering
-\includegraphics[width=0.66\columnwidth]{fig_knn_validity.png}
-\caption{K-NN signal validity. The clicked ad is far more similar to the clicked
-ads of similar queries (0.884) than to random ads (0.677), Cohen's $d=1.27$.}
-\Description{Two bars showing SKNCP similarity 0.884 vs random 0.677.}
+\includegraphics[width=\columnwidth]{evidence_2.png}
+\caption{K-NN signal validity (Evidence~2). (a) The current clicked ad is far
+more similar to the clicked ads of its similar queries (mean $0.879$) than to
+random ads (mean $0.674$), Cohen's $d=1.27$. (b) Per-click paired comparison:
+for $\approx80\%$ of clicks the SKNCP similarity exceeds the random baseline.}
+\Description{Left: two histograms, SKNCP mean 0.879 vs random mean 0.674. Right:
+paired scatter where most points lie on the SKNCP-wins side.}
 \label{fig:knn}
 \end{figure}
 
