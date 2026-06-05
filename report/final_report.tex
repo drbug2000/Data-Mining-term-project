@@ -81,7 +81,10 @@ a pretrained sentence encoder (MiniLM) and are \emph{frozen}. The training log
 is a set of displayed-ad impressions
 $\{(s_i,u_{s_i},a_i,r_i,h_i,y_i)\}_{i=1}^{N}$ with $N=320{,}000$, where
 $r_i$ is the display position, $h_i$ the engine-provided historical CTR, and
-$y_i\in\{0,1\}$ the click label.
+$y_i\in\{0,1\}$ the click label. For a search event $s$, we write $a_s^+$ for
+its clicked ad (when one exists) and $z_{a_s^+}$ for its embedding; this lets us
+distinguish a user's \emph{search intent} $x_s$ from the \emph{clicked-ad
+representation} $z_{a_s^+}$, a distinction the Task~2 model relies on.
 
 \paragraph{Terms used throughout (defined once here).}
 \bit
