@@ -122,6 +122,28 @@ w_min=0.5 정규화는 이 경우 약간 손해 — 자유 적합이 더 나음(
 신뢰구간 내) — **어떤 추가 신호도 통계적으로 유의하게 기여하지 않음**. 두 원 보고서가 각각
 관찰한 "추가 신호가 성능을 깎음 / 정보 천장" 을 **세 번째 독립 구성(합집합)으로 재확인**.
 
+### 3.5 유저 이력 층화 검증 (cold / search-only / warm)
+
+권장 모델(5CTR + content 앙상블, 사전확률 임계값)을 외부 검증의 각 유저가 **학습 데이터에서
+가졌던 이력**으로 3층으로 나눠 분석. 층 정의는 학습 내부-train 만으로(leak-free):
+- **cold**: 학습에서 처음 보는 유저, **search-only**: 검색은 있으나 클릭 0회, **warm**: 클릭 ≥1회.
+
+| 층 | 행수 | 비중 | 클릭률 | AUC | precision | recall | **F1** |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| cold | 5,871 | 29.4% | 1.38% | 0.682 | 13.3% | 9.9% | **0.1135** |
+| search-only | 9,861 | 49.3% | 0.97% | 0.729 | 15.2% | 5.2% | 0.0775 |
+| warm | 4,268 | 21.3% | 1.22% | 0.717 | 8.5% | 21.2% | **0.1209** |
+| **전체** | 20,000 | 100% | 1.15% | 0.713 | 10.8% | 10.5% | **0.1062** |
+(전역 사전확률 임계값으로 상위 예측한 뒤 층별로 분해 — 층별 F1 이 전체로 합성됨)
+
+**읽기**:
+- **warm 이 엔진**(F1 0.1209, recall 21%): entity CTR + content 신호가 모두 살아있는 층.
+- **cold 도 content 가 다리(bridge) 역할**(F1 0.1135): AUC 는 0.682 로 가장 낮지만(처음 보는
+  유저라 entity 신호 없음), 클릭 학습 content head 가 메워 F1 을 warm 수준 가까이 유지.
+  → content 앙상블 채택의 직접 근거(외부 cold-start 29% 를 살림).
+- **search-only 가 F1 사각지대**(0.0775, 49% 데이터): AUC 는 0.729 로 가장 높은데 F1 은 최저 —
+  랭킹은 되지만 양성을 임계값 위로 못 밀어올림(AUC↛F1 지문). 남은 천장이 여기 국지화.
+
 ---
 
 ## 4. 결론
@@ -153,6 +175,9 @@ CUDA_VISIBLE_DEVICES=0 python -X utf8 models/m04_gated/experiments/exp_content_s
 # 2) 통합 파이프라인: 전 신호 + 조합 비교 + 부트스트랩 + 제거실험
 CUDA_VISIBLE_DEVICES=0 python -X utf8 models/m04_gated/experiments/exp_unified.py
 #    -> /tmp/pumasi_res/unified.json
+
+# 3) 유저 이력 층화 검증 (cold/search-only/warm) — 1) 의 캐시 사용
+python -X utf8 models/m04_gated/experiments/exp_strat_user.py
 
 # (참고) 용량 반증
 CUDA_VISIBLE_DEVICES=0 python -X utf8 models/m04_gated/experiments/exp_tabular_gbdt.py  # 0.078 과적합
