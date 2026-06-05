@@ -2,7 +2,7 @@
 
 **Course**: AI506 Data Mining and Search — Term Project  
 **Model**: Model-1 (Simple Text Embedding Baseline)  
-**작성일**: 2026-05-09
+**작성일**: 2026-06-05
 
 ---
 
@@ -34,11 +34,13 @@ weight_i  /= Σ weight_j                     # 정규화 (합 = 1)
 v_i += sign · α · weight_i · normalize(e)   # 가중 업데이트
 ```
 
-| 이벤트 | sign | α | 의미 |
+| 이벤트 | sign | α | 업데이트 대상 |
 |--------|------|---|------|
-| 검색 발생 | +1 | `alpha_search` | interest를 검색 방향으로 당김 |
-| 광고 클릭 | +1 | `alpha_click` | interest를 클릭 광고 방향으로 강하게 당김 |
-| 광고 비클릭 | -1 | `alpha_neg` | interest를 비클릭 광고 반대 방향으로 밂 |
+| 검색 발생 | +1 | `alpha_search` | `_interests` (Task B용) |
+| 광고 클릭 | +1 | `alpha_click` | `_interests` + `_click_interests` (Task A용) |
+| 광고 비클릭 | -1 | `alpha_neg` | `_click_interests` (alpha_neg=0이면 비활성) |
+
+Task A 전용 `_click_interests`를 분리하여 검색 신호로 인한 오염을 방지한다.
 
 #### 예측
 
@@ -50,10 +52,19 @@ $$\text{score}_j = (1 - \gamma)\cdot\text{sim}(q, a_j) + \gamma\cdot\max_i\,\tex
 
 **Task A (Click Prediction)**
 
-$$\text{score} = (1 - \gamma)\cdot\text{sim}(q,\, a) + \gamma\cdot\max_i\,\text{sim}(v_i,\, a)$$
+$$\text{score} = (1 - \gamma)\cdot\text{sim}(q,\, a) + \gamma\cdot\max_i\,\text{sim}(v^{\text{click}}_i,\, a)$$
 
-Task B와 동일한 혼합 공식을 사용한다. 단, 클릭 이력이 없는 유저(Adaptive gamma)는 γ=0으로 폴백해 query-ad 유사도만 사용한다.  
-score > (1 - threshold) 이면 클릭(1), 아니면 비클릭(0)으로 예측한다.
+Task A는 `_click_interests`(`v^click`)를 사용한다. score > (1 − threshold) 이면 클릭(1), 아니면 비클릭(0)으로 예측한다.
+
+#### Tiered Adaptive Gamma
+
+유저의 훈련 이력에 따라 gamma를 3단계로 차등 적용한다:
+
+| 유저 상태 | 적용 gamma | 비율 |
+|---|---|---|
+| 클릭 이력 있음 | `gamma` (= 0.7) | 16.9% |
+| 검색 이력만 있음 (클릭 없음) | `gamma_search` (= 0.5) | — |
+| 완전 cold-start | 0.0 (query-only fallback) | 83.1% |
 
 ---
 
@@ -68,44 +79,44 @@ score > (1 - threshold) 이면 클릭(1), 아니면 비클릭(0)으로 예측한
 | 광고 수 | 17,518개 |
 | 훈련 행 | 320,000건 |
 | 전체 CTR | 1.11% (클릭 3,560 / 전체 320,000) |
-| 클릭 발생 유저 | 2,385명 (전체의 14%) |
+| 훈련 유저 수 | 14,133명 |
+| 클릭 발생 유저 | 2,385명 (훈련 유저의 16.9%) |
+| 클릭 없는 유저 | 11,748명 (훈련 유저의 83.1%) |
 | 클릭 유저 1인당 평균 클릭 수 | 1.49회 |
 | 임베딩 차원 | 384 |
 
-### 2-2. Hyperparameter
+### 2-2. Hyperparameter (SOTA)
 
-| 파라미터 | 초기값 | Step 5 수정값 | 설명 |
-|----------|:------:|:-------------:|------|
-| `k` | 5 | 5 | interest vector 개수 |
-| `alpha_search` | 0.1 | **0.01** | 검색 업데이트 강도 |
-| `alpha_click` | 0.5 | 0.5 | 클릭 업데이트 강도 |
-| `alpha_neg` | 0.0 | 0.0 | 비클릭 페널티 (비활성) |
-| `temperature` | 1.0 | 1.0 | soft assignment 온도 |
-| `gamma` | 0.5 | 0.5 (adaptive) | user interest 혼합 비율 |
-| `threshold` | 0.5 | 0.5 | 클릭 판정 임계값 (Task A) |
+| 파라미터 | 값 | 설명 |
+|----------|:--:|------|
+| `k` | 5 | interest vector 개수 |
+| `alpha_search` | 0.01 | 검색 업데이트 강도 (클릭보다 약한 신호) |
+| `alpha_click` | 0.5 | 클릭 업데이트 강도 |
+| `alpha_neg` | 0.0 | 비클릭 페널티 (비활성) |
+| `temperature` | 0.1 | soft assignment 온도 (τ sweep 선택값) |
+| `gamma` | **0.7** | 클릭 이력 유저의 interest 가중치 |
+| `gamma_search` | **0.5** | 검색 이력만 있는 유저의 interest 가중치 |
+| `threshold` | 0.5 | 클릭 판정 임계값 (Task A) |
+
+> `gamma`와 `gamma_search`는 `tiered_gamma_eval.py` 그리드 서치로 결정 (Task B NDCG@3 최적화).
 
 ### 2-3. 평가 지표
 
 | Task | 지표 | 정의 |
 |------|------|------|
-| B | **Accuracy** | 정답 AdID를 1위로 예측한 비율 |
-| B | **AUC** | 정답 광고가 임의 오답보다 높은 점수를 받을 확률 (ranking AUC) |
-| B | **MRR** | Mean Reciprocal Rank — 1/(정답 순위)의 평균 |
-| A | **Accuracy** | 전체 정확도 |
-| A | **Precision** | 클릭으로 예측한 것 중 실제 클릭 비율 — **IsClick=1 기준** |
-| A | **Recall** | 실제 클릭 중 올바르게 탐지한 비율 — **IsClick=1 기준** |
-| A | **F1** | 클릭 클래스 F1 — **IsClick=1 기준** |
+| B | **NDCG@3** | 1/log₂(rank+1) (rank≤3), else 0; 전체 쿼리 평균 |
+| A | **F1** | 클릭 클래스(IsClick=1) F1 |
 | A | **AUC** | ROC AUC (Wilcoxon-Mann-Whitney 통계량) |
+| A | **Precision / Recall** | IsClick=1 기준 |
 
 ### 2-4. 비교 베이스라인
 
 | 모델 | 설명 |
 |------|------|
-| **MultiInterest (ours)** | 본 모델 |
-| **Query-only** (gamma=0) | user interest 없이 query-ad 유사도만 사용 |
+| **MultiInterest (ours)** | 본 모델 (SOTA config) |
+| **Query-only** (gamma=0, gamma_search=0) | user interest 없이 query-ad 유사도만 사용 |
 | **Random** | 무작위 예측 |
-| **Always-0** | 항상 비클릭으로 예측 |
-| **Always-1** | 항상 클릭으로 예측 |
+| **HistCTR baseline** | 과거 CTR만 사용 (Task A F1=0.0436, Task B NDCG@3=0.0211) |
 
 ---
 
@@ -113,162 +124,178 @@ score > (1 - threshold) 이면 클릭(1), 아니면 비클릭(0)으로 예측한
 
 ### 3-1. Task B — Ad Recommendation (214 queries, 17,518 candidates)
 
-#### Step 4 (초기 결과, alpha_search=0.1)
+| 모델 | **NDCG@3** | Rank 1 | Rank 2 | Rank 3 | >Rank 3 |
+|------|:----------:|:------:|:------:|:------:|:-------:|
+| **MultiInterest (ours)** | **0.1538** | 28 | 7 | 1 | 178 |
+| Query-only (gamma=0) | 0.0989 | 17 | 5 | 2 | 190 |
+| Random | 0.0000 | 0 | 0 | 0 | 214 |
+| HistCTR baseline | 0.0211 | — | — | — | — |
 
-| 모델 | Accuracy | AUC | MRR |
-|------|:--------:|:---:|:---:|
-| **MultiInterest (ours)** | **0.0748** | 0.8417 | **0.1337** |
-| Query-only (gamma=0) | 0.0607 | **0.8454** | 0.1197 |
-| Random | 0.0000 | 0.5047 | 0.0007 |
-
-#### Step 5 (개선 후, alpha_search=0.01 + adaptive gamma)
-
-| 모델 | Accuracy | AUC | MRR |
-|------|:--------:|:---:|:---:|
-| **MultiInterest (ours)** | **0.0748** | **0.8500** | **0.1428** |
-| Query-only (gamma=0) | 0.0607 | 0.8454 | 0.1197 |
-| Random | 0.0000 | 0.5047 | 0.0007 |
-
-**Confusion (Task B — Step 5)**
-
-| | Correct | Wrong | Total |
-|--|:-------:|:-----:|:-----:|
-| Queries | 16 | 198 | 214 |
+- MultiInterest는 HistCTR baseline 대비 **×7.3**, Query-only 대비 **×1.56** 향상.
+- 214 쿼리 중 36건(16.8%)이 Top-3 내 정답 (Rank 1: 28건, Rank 2: 7건, Rank 3: 1건).
 
 ### 3-2. Task A — Click Prediction (20,000 queries, CTR 1.15%)
 
-#### Step 4 (초기 결과)
+#### 모델 비교 (threshold=0.5)
 
 | 모델 | Accuracy | Precision | Recall | F1 | AUC |
 |------|:--------:|:---------:|:------:|:--:|:---:|
-| **MultiInterest (ours)** | 0.8762 | 0.0049 | 0.0480 | 0.0088 | 0.4164 |
+| **MultiInterest (ours)** | 0.5947 | 0.0133 | **0.4716** | **0.0260** | **0.5435** |
 | Always-0 (no click) | **0.9886** | 0.0000 | 0.0000 | 0.0000 | 0.5000 |
 | Always-1 (all click) | 0.0115 | 0.0115 | 1.0000 | 0.0226 | 0.5000 |
-
-#### Step 5 (개선 후)
-
-| 모델 | Accuracy | Precision | Recall | F1 | AUC |
-|------|:--------:|:---------:|:------:|:--:|:---:|
-| **MultiInterest (ours)** | 0.5686 | 0.0131 | **0.4934** | **0.0255** | **0.5334** |
-| Always-0 (no click) | **0.9886** | 0.0000 | 0.0000 | 0.0000 | 0.5000 |
-| Always-1 (all click) | 0.0115 | 0.0115 | 1.0000 | 0.0226 | 0.5000 |
+| HistCTR baseline | — | — | — | 0.0436 | — |
 
 *Precision / Recall / F1: IsClick=1 기준*
 
-**Per-class (MultiInterest, Step 5)**
-
-| Class | TP | FP | FN | Precision | Recall | F1 | Support |
-|-------|:--:|:--:|:--:|:---------:|:------:|:--:|:-------:|
-| 0 (no-click) | 11,260 | 116 | 8,511 | 0.9898 | 0.5695 | 0.7230 | 19,771 |
-| 1 (click) | 113 | 8,511 | 116 | 0.0131 | 0.4934 | 0.0255 | 229 |
-
-**Confusion Matrix (Task A — Step 5)**
-
-| | Pred 0 | Pred 1 |
-|--|:------:|:------:|
-| **True 0** (19,771) | 11,260 (TN) | 8,511 (FP) |
-| **True 1** (229) | 116 (FN) | 113 (TP) |
-
-**Threshold Sweep (MultiInterest, Step 5)**
+#### Threshold Sweep (MultiInterest)
 
 | Threshold | Accuracy | Precision | Recall | F1 |
 |:---------:|:--------:|:---------:|:------:|:--:|
 | 0.1 | 0.9710 | 0.0111 | 0.0175 | 0.0136 |
-| 0.2 | 0.9281 | 0.0152 | 0.0830 | **0.0257** |
-| 0.3 | 0.8325 | 0.0107 | 0.1485 | 0.0199 |
-| 0.4 | 0.7046 | 0.0129 | 0.3275 | 0.0248 |
-| **0.5** | **0.5686** | **0.0131** | **0.4934** | **0.0255** |
-| 0.6 | 0.4155 | 0.0124 | 0.6376 | 0.0244 |
-| 0.7 | 0.2494 | 0.0125 | 0.8253 | 0.0246 |
-| 0.8 | 0.1134 | 0.0119 | 0.9345 | 0.0236 |
-| 0.9 | 0.0309 | 0.0116 | 0.9956 | 0.0230 |
+| 0.2 | 0.9282 | 0.0152 | 0.0830 | 0.0258 |
+| 0.3 | 0.8316 | 0.0112 | 0.1572 | 0.0209 |
+| 0.4 | 0.7059 | 0.0129 | 0.3275 | 0.0249 |
+| **0.5** | 0.5947 | 0.0133 | 0.4716 | **0.0260** |
+| **0.6** | 0.4793 | 0.0133 | 0.6070 | **0.0260** |
+| 0.7 | 0.3191 | 0.0127 | 0.7642 | 0.0251 |
+| 0.8 | 0.1447 | 0.0123 | 0.9258 | 0.0242 |
+| 0.9 | 0.0348 | 0.0116 | 0.9913 | 0.0230 |
 
-> F1 최대값은 threshold=0.2 (F1=0.0257). Precision-Recall tradeoff 상 threshold를 낮추면 Recall이 급감하고, 높이면 Precision이 급감한다. 근본 원인은 클래스 불균형(CTR 1.15%)에 있으므로 F1 수치 자체는 낮다.
+> F1 최대값 **0.0260**은 threshold=0.5와 0.6에서 동시에 달성된다.  
+> 근본 원인: CTR 1.15%의 극심한 클래스 불균형. AUC=0.5435 수준의 discriminative power로는 F1 한계가 낮다.
+
+#### Per-class (threshold=0.6, best F1=0.0260)
+
+| Class | TP | FP | FN | Precision | Recall | F1 | Support |
+|-------|:--:|:--:|:--:|:---------:|:------:|:--:|:-------:|
+| 0 (no-click) | 9,448 | 90 | 10,323 | 0.9906 | 0.4779 | 0.6447 | 19,771 |
+| 1 (click) | 139 | 10,323 | 90 | 0.0133 | 0.6070 | 0.0260 | 229 |
+
+#### Confusion Matrix (threshold=0.6)
+
+| | Pred 0 | Pred 1 |
+|--|:------:|:------:|
+| **True 0** (19,771) | 9,448 (TN) | 10,323 (FP) |
+| **True 1** (229) | 90 (FN) | 139 (TP) |
 
 ---
 
 ## 4. 분석
 
-### 4-1. Task B — Step 5 결과 분석
+### 4-1. Task B 성능 분석
 
-**개선 효과**
+**Query-only 대비 user interest의 기여**
 
-| 지표 | Step 4 | Step 5 | 변화 |
-|------|:------:|:------:|:----:|
-| Accuracy | 0.0748 | 0.0748 | - |
-| AUC | 0.8417 | **0.8500** | +0.0083 |
-| MRR | 0.1337 | **0.1428** | +0.0091 |
+| 지표 | Query-only | MultiInterest | 향상 |
+|------|:----------:|:-------------:|:----:|
+| NDCG@3 | 0.0989 | **0.1538** | +56% |
+| Rank 1 hits | 17 | **28** | +65% |
 
-- alpha_search를 0.1 → 0.01로 낮추자 interest vector가 클릭 신호에 더 민감하게 수렴했다.
-- **Step 5에서 MultiInterest AUC(0.8500) > Query-only AUC(0.8454)**: 이제 user interest가 랭킹 순서도 개선한다.
-- Accuracy는 동일(16/214): 단순 top-1 정확도는 클릭 집계 품질보다 데이터 분산이 지배적.
-- Adaptive gamma: 클릭 이력 없는 유저(86%)를 query-only로 폴백시켜 noise interest 혼입을 방지.
+- Tiered adaptive gamma (γ_search=0.5)가 search-only 유저의 interest를 부분적으로 활용하여 query-only 대비 성능을 추가로 끌어올린다.
+- 클릭 이력이 없는 유저(83.1%)는 query-only 폴백으로 동작하므로, 전체 향상은 클릭 이력 유저(16.9%)에 집중된다.
 
-### 4-2. Task A — Step 5 결과 분석
+**HistCTR 대비 ×7.3 달성 이유**
 
-**핵심 개선: AUC 0.4164 → 0.5334 (역상관 해소)**
+HistCTR 방식(과거 CTR 기반 순위)은 17,518개 후보 전체에 대해 쿼리-무관한 인기도만 반영한다. Text embedding은 쿼리와 의미적으로 일치하는 광고를 직접 찾으므로 retrieval 문제에서 근본적으로 유리하다.
 
-| 지표 | Step 4 | Step 5 | 변화 |
-|------|:------:|:------:|:----:|
-| Accuracy | 0.8762 | 0.5686 | - |
-| Precision | 0.0049 | 0.0131 | +168% |
-| Recall | 0.0480 | **0.4934** | +928% |
-| F1 | 0.0088 | **0.0255** | +190% |
-| AUC | 0.4164 | **0.5334** | +0.1170 |
+### 4-2. Task A 성능 분석
 
-Step 4의 AUC < 0.5 문제가 해소됐다. 두 수정이 각각 다른 효과를 냈다.
+**AUC=0.5435, HistCTR F1=0.0436에 미달하는 원인**
 
-#### [수정 2] score_click에 query-ad 유사도 추가 → AUC 반전의 핵심
+Task A는 이미 노출된 광고 중 클릭 여부를 예측하는 **행동 예측** 문제다. 훈련 데이터에서 클릭 광고와 비클릭 광고의 query-ad 코사인 유사도 분포가 거의 동일하다:
 
-Step 4의 `score_click = max_i cosine_sim(v_i, ad)`는 interest vector가 검색 방향으로 쏠려있어 클릭과 역방향 상관관계를 가졌다. Step 5에서 `(1-gamma)*sim(query,ad) + gamma*max_i sim(v_i,ad)`로 바꾸자 **query-ad 유사도가 강한 양의 클릭 신호를 제공**하며 AUC가 0.5를 넘겼다.
+| 그룹 | mean sim | std | Cohen's d |
+|------|:--------:|:---:|:---------:|
+| 클릭 광고 | 0.524 | 0.213 | — |
+| 비클릭 광고 | 0.501 | 0.217 | **0.11** |
 
-#### [수정 3] alpha_search 0.1 → 0.01 → Interest 품질 개선
+Cohen's d=0.11은 "거의 구분 불가" 범주 (|d|<0.2). 클릭 여부는 텍스트 의미 유사도 이외의 요인 — 광고 크리에이티브, 가격, 노출 위치(position bias), 구매 의도 강도 등 — 에 의해 결정되기 때문이다.
 
-검색 이벤트가 클릭보다 ~50배 많아 누적 업데이트가 클릭 신호를 압도했다. alpha_search를 1/10로 줄이자 interest vector가 클릭 방향을 더 잘 보존한다.
+**F1이 낮은 근본 원인**
 
-#### 잔존 문제: Precision 극히 낮음
+CTR 1.15%의 극단적 클래스 불균형 하에서 AUC=0.5435 수준의 discriminative power는 F1 향상으로 이어지지 않는다. threshold를 어떻게 조정해도 F1 상한은 ~0.026 수준에서 정체된다.
 
-- CTR 1.15% 극단적 클래스 불균형 → threshold=0.5에서 8,511건(42.6%)을 클릭으로 예측, 실제 클릭은 113건만 맞힘
-- Threshold=0.2에서 F1이 0.0257로 미세하게 최대 (Precision 1.52%, Recall 8.3%)
-- 근본 원인: score 분포가 클릭/비클릭 간 충분히 분리되지 않음 → 미래 개선 필요
+### 4-3. Ablation Study — Task B NDCG@3
+
+각 구성 요소를 하나씩 제거 또는 변경했을 때의 NDCG@3 변화를 측정한다.  
+SOTA 기준: k=5, α_s=0.01, α_c=0.5, τ=0.1, γ=0.7, γ_s=0.5 (NDCG@3=**0.1538**)
+
+#### Interest 신호 기여
+
+| Ablation | NDCG@3 | vs SOTA | Rank 1 | Rank 2 | Rank 3 |
+|----------|:------:|:-------:|:------:|:------:|:------:|
+| **FULL (SOTA)** | **0.1538** | — | 28 | 7 | 1 |
+| w/o interest (γ=0, γ_s=0) | 0.0989 | **-0.0550** | 17 | 5 | 2 |
+| w/o tiered γ (γ_s=0) | 0.1351 | -0.0187 | 24 | 7 | 1 |
+| w/o search signal (α_s=0) | 0.1415 | -0.0123 | 25 | 6 | 3 |
+| w/o click signal (α_c=0) | 0.0866 | **-0.0673** | 16 | 4 | 0 |
+
+- **클릭 신호**가 가장 중요한 단일 요소(-0.0673): 검색 신호만으로는 interest가 거의 무의미  
+- **interest 전체 제거**(-0.0550) → query-only 수준으로 하락  
+- **tiered gamma**(-0.0187): search-only 유저(83.1%)에게 γ_s=0.5를 주는 것이 유효  
+- **검색 신호**도 보조 기여(-0.0123): 단독으로는 약하지만 클릭과 함께 시너지
+
+#### Interest Vector 수 (k)
+
+| k | NDCG@3 | vs SOTA |
+|:-:|:------:|:-------:|
+| 1 | 0.1392 | -0.0146 |
+| 3 | 0.1392 | -0.0146 |
+| **5 (SOTA)** | **0.1538** | — |
+| 10 | 0.1362 | -0.0176 |
+
+- k=1, 3은 동일 성능(0.1392): 클릭 신호가 희소(유저당 평균 1.49회)하여 다수의 vector를 특화하기 어려움  
+- k=10은 오히려 하락: 파라미터가 많아질수록 수렴이 느려지는 효과  
+- **k=5가 최적**
+
+#### Soft Assignment 온도 (τ)
+
+| τ | NDCG@3 | vs SOTA |
+|:---:|:------:|:-------:|
+| 0.01 | 0.1584 | +0.0046 |
+| **0.1 (SOTA)** | **0.1538** | — |
+| 1.0 | 0.1445 | -0.0093 |
+| 100.0 | 0.1334 | -0.0204 |
+
+- τ가 작을수록 가장 가까운 interest vector에 집중(hard assignment에 근접) → 성능 향상  
+- τ=0.01은 최고점(+0.0046)이지만 τ=1.0 대비 soft-assignment 특성이 거의 사라짐  
+- τ=0.1을 SOTA로 선택: soft assignment를 유지하면서 τ=1.0 대비 유의미한 향상(+0.0093)  
+- uniform(τ=100) 최저: 모든 vector에 균등 업데이트 → specialization 소멸
 
 ---
 
-## 5. 개선 방향 (Step 5 이후)
-
-### 5-1. 적용 완료 (Step 5)
+## 5. 적용된 개선 사항
 
 | 수정 | 내용 | 효과 |
 |------|------|------|
-| [수정 1] Adaptive gamma | 클릭 이력 없는 유저(86%)는 gamma=0으로 폴백 | Task B AUC +0.008 |
-| [수정 2] Task B score 설계 | `(1-γ)*sim(q,a) + γ*max_i sim(v_i,a)` 통일 | Task B AUC 0.41→0.53 |
-| [수정 3] alpha_search 감소 | 0.1 → 0.01 (검색 누적 지배 억제) | Task A Recall +928% |
+| **Interest 분리** | `_interests` (Task B) / `_click_interests` (Task A) 별도 유지 | 검색 신호 오염 제거 |
+| **alpha_search 감소** | 0.1 → 0.01 (검색이 클릭보다 ~89배 많아 누적 지배 억제) | Task A AUC 개선 |
+| **Tiered adaptive gamma** | cold=0, search-only=0.5, click=0.7 | Task B NDCG@3 +56% vs query-only |
+| **score_click 설계** | `(1-γ)*sim(q,a) + γ*max_i sim(v_i^click, a)` | Task A AUC >0.5 달성 |
 
-### 5-2. 추가 개선 아이디어
+### 추가 개선 아이디어 (미적용)
 
 | 아이디어 | 기대 효과 | 복잡도 |
 |----------|-----------|--------|
-| HistCTR 피처 활용: 광고의 과거 CTR을 score에 가산 | Task A Precision 개선 | 낮음 |
-| k 튜닝: 클릭 희소성 감안해 k=1~2로 줄이기 | Interest 수렴 속도 향상 | 낮음 |
-| alpha_neg 활성화: 비클릭 광고 방향 억압 | Interest selectivity 향상 | 낮음 |
-| Temporal decay: 오래된 업데이트에 감쇠 계수 적용 | Interest drift 대응 | 중간 |
-| gamma 세밀 튜닝: 클릭 횟수에 비례한 effective_gamma | 데이터 희소성 대응 | 낮음 |
+| HistCTR 피처 활용 | Task A Precision 개선 | 낮음 |
+| k 튜닝 (k=1~2) | 클릭 희소성 감안해 interest 수렴 가속 | 낮음 |
+| alpha_neg 활성화 | click_interests selectivity 향상 | 낮음 |
+| Temporal decay | interest drift 대응 | 중간 |
 
 ---
 
 ## 6. 결론
 
-| 관점 | Step 4 | Step 5 |
-|------|--------|--------|
-| Task B AUC | 0.8417 (Query-only에 뒤짐) | **0.8500** (Query-only 역전) |
-| Task B Accuracy | 0.0748 (랜덤 대비 1,700×) | 0.0748 (유지) |
-| Task A AUC | 0.4164 (역상관) | **0.5334** (정방향 달성) |
-| Task A Recall | 0.0480 | **0.4934** (+928%) |
-| Task A F1 | 0.0088 | **0.0255** (+190%) |
+| 지표 | MultiInterest (ours) | Query-only | HistCTR baseline |
+|------|:--------------------:|:----------:|:----------------:|
+| **Task B NDCG@3** | **0.1538** | 0.0989 | 0.0211 |
+| Task B Rank 1 | 28 / 214 | 17 / 214 | — |
+| **Task A F1** | **0.0260** | — | 0.0436 |
+| Task A AUC | **0.5435** | — | — |
 
-- **Task B**: text embedding 기반 retrieval이 강한 신호를 제공(AUC 0.85). adaptive gamma와 alpha_search 재조정으로 user interest도 랭킹을 개선함.
-- **Task A**: score 설계(query-ad 유사도 추가)와 업데이트 비중 재조정으로 AUC를 0.5 이상으로 끌어올렸다. Precision은 여전히 낮아 추가 개선 여지가 있다.
-- **전체 방향성**: 학습 파라미터 없이 pre-trained embedding만으로 합리적인 retrieval 성능을 달성했다. Task A click prediction은 극단적 클래스 불균형(CTR 1.15%)이 핵심 도전이며, HistCTR 같은 보조 피처 활용이 다음 단계다.
+- **Task B**: text embedding 기반 retrieval이 강한 신호를 제공. user interest (tiered adaptive gamma)로 query-only 대비 +56% 추가 향상.
+- **Task A**: score 설계(query-ad 유사도 + click interest 분리)로 AUC >0.5를 달성했으나, text embedding만으로는 F1이 HistCTR baseline에 미달. CTR 1.15% 불균형과 클릭 메커니즘의 비의미적 요인이 근본 한계.
+- **전체**: 학습 파라미터 없이 pre-trained embedding만으로 Task B에서 HistCTR 대비 ×7.3 달성. Task A 개선을 위해서는 HistCTR 등 행동 신호 추가가 필요.
 
 ---
 
@@ -280,49 +307,30 @@ Step 4의 `score_click = max_i cosine_sim(v_i, ad)`는 interest vector가 검색
 
 ### 7-1. 분석 동기
 
-모델이 Task B (광고 추천, NDCG@3=0.1228, 베이스라인 대비 6배)에서는 강한 성능을 보이면서, Task A (클릭 예측, F1=0.0257, HistCTR 베이스라인 F1=0.0436 미달)에서는 성능이 낮은 원인을 파악하기 위해 분석을 수행했다.
-
-구체적인 개선 실험(alpha_neg 활성화, click-only interest 분리 등)을 진행해도 Task A F1이 0.03 수준에서 정체되자, 다음 가설을 제기했다.
+모델이 Task B (광고 추천, NDCG@3=**0.1538**, HistCTR 대비 **×7.3**)에서는 강한 성능을 보이면서, Task A (클릭 예측, F1=0.0260, HistCTR baseline F1=0.0436 미달)에서는 성능이 낮은 원인을 파악하기 위해 분석을 수행했다.
 
 > **가설**: User interest vector는 user가 관심을 갖는 광고를 잘 포착하지만, 실제 클릭 여부는 interest와 다른 요인들에 의해 결정된다.  
 > "관심(interest) 광고"와 "클릭(click) 광고"는 동일하지 않을 수 있다.
 
-이 가설이 사실이라면, text embedding 기반 interest 모델이 Task B에는 적합하지만 Task A에는 원천적인 한계를 가진다는 결론이 도출된다.
-
 ### 7-2. 분석 방법론
 
-분석의 핵심 아이디어는 **두 task에서 query-ad 코사인 유사도의 "신호 분리 가능성(discriminability)"을 비교**하는 것이다. Text embedding 기반 유사도가 각 task의 정답 기준을 얼마나 잘 구분하는지를 정량화한다.
+분석의 핵심 아이디어는 **두 task에서 query-ad 코사인 유사도의 "신호 분리 가능성(discriminability)"을 비교**하는 것이다.
 
 #### 분석 1: Task A — 클릭/비클릭 광고의 query-ad 유사도 분포 비교
 
-`click_validation_*` 데이터의 20,000개 (검색, 광고) 쌍 각각에 대해 `sim(query, ad) = normalize(query_emb) · normalize(ad_emb)`를 계산하고, `IsClick=1`(클릭, 229건)과 `IsClick=0`(비클릭, 19,771건) 두 그룹의 분포를 비교한다.
-
-**지표**:
-- **평균 Gap**: 클릭 그룹 평균 유사도 − 비클릭 그룹 평균 유사도
-- **Cohen's d**: 표준화된 효과 크기. `d = Gap / pooled_std`. 0.2 미만이면 "거의 구분 불가", 0.8 초과면 "대형 효과"
-- **분포 겹침 (Overlap)**: 두 분포를 50개 구간으로 히스토그램화한 뒤 `Σ min(h_click, h_noclick) · Δbin`으로 계산. 1.0이면 완전 동일, 0이면 완전 분리
+`click_validation_*` 데이터의 20,000개 (검색, 광고) 쌍 각각에 대해 `sim(query, ad)`를 계산하고, `IsClick=1`(클릭, 229건)과 `IsClick=0`(비클릭, 19,771건) 두 그룹의 분포를 비교한다.
 
 #### 분석 2: Task B — 정답 광고 vs 랜덤 광고의 query-ad 유사도 분포 비교
 
-`ad_validation_*` 데이터의 214개 검색 쿼리 각각에 대해 ①정답 광고(val_ad_answers에 지정된 AdID)와 ②무작위 5개 광고의 유사도를 계산한다. 정답(214건) vs 랜덤(1,070건) 두 그룹을 동일 방식으로 비교한다.
-
-이 분석은 **"embedding이 Task B를 구분하는 힘"**을 측정한다. Task A와의 비교를 통해 두 task 사이의 근본적 차이를 드러낸다.
+`ad_validation_*` 데이터의 214개 검색 쿼리 각각에 대해 ①정답 광고와 ②무작위 5개 광고의 유사도를 계산한다.
 
 #### 분석 3: 유저 레벨 상관관계
 
-두 task에 모두 등장하는 유저(공통 29명)에 대해:
-- **Task B 성능**: 해당 유저의 마지막 검색에서 정답 광고의 순위(rank, 낮을수록 좋음)
-- **Task A 성능**: 해당 유저에 대한 클릭 예측 AUC (Wilcoxon-Mann-Whitney)
-
-두 지표의 Pearson 상관계수를 계산한다. 가설이 맞다면 상관계수는 0에 가까워야 한다 — Task B를 잘 맞추는 유저가 Task A에서도 잘 맞아야 할 이유가 없기 때문이다.
-
-추가로 Task B 순위 기준 상위/중위/하위 1/3 그룹별 Task A AUC 평균을 비교한다.
+두 task에 모두 등장하는 유저(공통 29명)에 대해 Task B 순위와 Task A AUC의 상관관계를 분석한다.
 
 #### 분석 4: 훈련 데이터 검증
 
-동일한 분석 1을 훈련 데이터(320,000행, 클릭 3,560건 / 비클릭 316,440건)에 적용해, Task A의 낮은 분리 가능성이 검증 데이터 특성이 아니라 **데이터 자체의 본질적 특성**임을 확인한다.
-
-모든 분석은 `experiments/hypothesis_analysis.py`에 구현되어 있으며, Task B 결과 산출 시에는 adaptive gamma=0.5 설정으로 훈련된 MultiInterestModel을 사용했다.
+동일한 분석 1을 훈련 데이터(320,000행)에 적용해, Task A의 낮은 분리 가능성이 데이터 자체의 본질적 특성임을 확인한다.
 
 ### 7-3. 분석 결과
 
@@ -334,8 +342,9 @@ Step 4의 `score_click = max_i cosine_sim(v_i, ad)`는 interest vector가 검색
 | 비클릭 광고 (IsClick=0) | 19,771 | 0.5026 | 0.2154 |
 
 - **Gap**: +0.0315
-- **Cohen's d**: **0.15** → "거의 구분 불가" 범주 (|d| < 0.2)
+- **Cohen's d**: **0.15** → "거의 구분 불가" (|d| < 0.2)
 - **분포 겹침**: **0.80** → 두 분포의 80%가 겹침
+- **AUC (cos-sim as predictor)**: **0.5375** (random 수준)
 
 #### 분석 2 — Task B: 정답/랜덤 query-ad 유사도 분포
 
@@ -346,7 +355,11 @@ Step 4의 `score_click = max_i cosine_sim(v_i, ad)`는 interest vector가 검색
 
 - **Gap**: +0.2945 (Task A Gap의 **9.4배**)
 - **Cohen's d**: **1.56** → "대형 효과" (|d| > 0.8)
-- **분포 겹침**: **0.38** → Task A 대비 분포가 훨씬 분리됨
+- **분포 겹침**: **0.38**
+
+> **주의**: d=1.56은 Task B 정답 광고(실제 노출·클릭)와 *전체 17,518개 중 무작위 추출* 광고의 비교다.  
+> 노출된 비클릭 광고(실제 경쟁 후보) vs 랜덤 광고도 d=1.27로 거의 유사하다 — 이는 광고 노출 자체가 이미 query와 의미적으로 맞는 광고를 필터링한 결과이기 때문이다.  
+> 따라서 d=1.56은 "유저가 텍스트 유사도가 높은 광고를 선호"가 아니라 **데이터 생성 구조(광고 시스템의 pre-filtering)**를 반영한다.
 
 #### 분석 3 — 유저 레벨 상관관계
 
@@ -360,62 +373,43 @@ Step 4의 `score_click = max_i cosine_sim(v_i, ad)`는 interest vector가 검색
 | 중위 1/3 | 0.5316 | 9 |
 | 하위 1/3 (rank > 721) | 0.5039 | 10 |
 
-**주목할 점**: Task B를 가장 잘 맞추는 유저(rank 상위 1/3)의 Task A AUC가 **0.42** — 랜덤(0.5)보다도 낮다.
-
 #### 분석 4 — 훈련 데이터 검증
 
 | 그룹 | n | 평균 유사도 | Cohen's d |
 |------|---|:---------:|:---------:|
 | 클릭 광고 | 3,560 | 0.5242 | — |
 | 비클릭 광고 | 316,440 | 0.5013 | **0.11** |
-
-훈련 데이터에서도 Cohen's d=0.11로 검증 데이터(d=0.15)와 동일하게 "거의 구분 불가" 수준이다.
+| AUC (cos-sim predictor) | — | — | **0.5301** |
 
 ### 7-4. 해석
 
 #### (1) Text Embedding이 Task B를 잘 푸는 이유
 
-Task B는 **의미적 유사성(semantic relevance) 문제**다. 17,518개의 다양한 광고 중에서 이 검색어와 가장 의미적으로 맞는 광고를 찾는 문제이며, pre-trained text embedding은 정확히 이 문제를 위해 설계된 도구다.
-
-정답 광고와 랜덤 광고 사이의 유사도 Gap이 0.29이고, Cohen's d=1.56이라는 것은 embedding 공간에서 "관련 광고"와 "무관한 광고"가 명확하게 분리된다는 의미다. User interest vector가 이 분리를 더욱 강화하여 NDCG@3=0.1228(베이스라인 0.0211 대비 6배)이 달성된다.
+Task B는 17,518개 광고 중 정답을 찾는 **retrieval 문제**다. 대부분의 후보는 해당 쿼리에 노출조차 된 적 없는 광고이므로 사실상 "랜덤"에 가깝다. 이 설정에서 text embedding similarity는 유효한 1차 ranking 신호를 제공한다. User interest profile은 이 신호를 보강하여 추가 성능 향상을 이끈다.
 
 #### (2) Text Embedding이 Task A를 잘 못 푸는 이유
 
-Task A는 **행동 예측(behavioral prediction) 문제**다. 광고가 이미 검색 결과에 노출된 상황에서, 이 특정 유저가 이 특정 광고를 **지금 클릭할 것인가**를 예측해야 한다.
-
-클릭 여부는 텍스트 임베딩으로 포착되지 않는 다양한 요인의 영향을 받는다:
-- 광고 크리에이티브 품질 (이미지, 카피 매력도)
-- 가격 경쟁력 및 프로모션 여부
-- 동시에 노출된 경쟁 광고들
-- 유저의 현재 구매 의도 강도 (탐색 vs 구매 단계)
-- 디바이스, 시간대, 피로도 등 컨텍스트 요인
-- 광고 노출 위치(position bias)
-
-클릭/비클릭 광고의 유사도 Gap이 0.03, Cohen's d=0.15에 불과하다는 것은, **텍스트 의미 유사성이 높다고 해서 클릭 가능성이 높은 것이 아님**을 직접적으로 보여준다.
+Task A는 이미 노출된 광고 중 클릭 여부를 예측하는 **행동 예측 문제**다. 노출된 광고들은 이미 시스템에 의해 의미적으로 선별된 상태이므로, 클릭/비클릭 광고 간 query-ad 유사도 차이가 극히 작다 (d=0.11). 클릭은 텍스트 유사도 외의 요인에 의해 결정된다.
 
 #### (3) 유저 레벨 상관관계의 의미
 
-Task B 상위 유저(embedding 공간에서 검색-광고 매칭이 잘 되는 유저)의 Task A AUC가 오히려 **0.42로 가장 낮다**는 역설적 결과는 다음과 같이 해석할 수 있다:
-
-Task B를 잘 맞추는 유저는 의미적으로 명확하고 구체적인 검색을 하는 유저다. 이런 유저는 광고와 검색어의 의미적 유사도가 높아도 클릭 여부가 다른 요인(가격, 브랜드 신뢰도 등)에 의해 결정될 가능성이 높다. 반면 모호한 검색을 하는 유저는 상대적으로 광고의 의미적 관련성이 클릭 의사결정에 더 많이 관여한다.
-
-즉, **두 task는 서로 다른 유저 특성에 의해 성능이 결정되는 독립적인 문제**임이 유저 레벨에서도 확인된다.
+r=0.07의 무상관은 두 task가 서로 다른 유저 특성을 측정함을 보여준다. Task B를 잘 맞추는 유저(의미적으로 명확한 검색)의 Task A AUC가 0.42로 오히려 낮은 것은, 구체적 검색을 하는 유저일수록 클릭 결정이 의미 유사도 이외의 요인(가격, 브랜드 등)에 더 크게 좌우됨을 시사한다.
 
 ### 7-5. 결론 및 함의
 
 | 항목 | Task A (클릭 예측) | Task B (광고 추천) |
 |------|:----------------:|:----------------:|
-| **문제 유형** | 행동 예측 | 의미적 검색 |
+| **문제 유형** | 행동 예측 | 의미적 retrieval |
 | **query-ad sim Gap** | +0.03 | +0.29 (9.4배) |
-| **Cohen's d** | 0.15 (구분 불가) | 1.56 (대형 효과) |
-| **분포 겹침** | 80% | 38% |
+| **Cohen's d** | 0.15 (구분 불가) | 1.56 (대형 효과)* |
+| **AUC (cos-sim predictor)** | 0.54 | — |
 | **유저 상관관계** | r = 0.07 (무관) | — |
+
+> *d=1.56: 전체 후보 대비 효과크기. 광고 시스템 pre-filtering 효과 포함.
 
 **가설 확인**: "유저의 관심 광고"와 "실제 클릭 광고"는 다른 메커니즘으로 결정된다.
 
-이 분석은 Task A의 낮은 성능이 모델 설계의 실패가 아니라, **text embedding이 제공할 수 있는 정보의 본질적 한계**에서 비롯됨을 보여준다. Task A F1을 HistCTR 베이스라인 수준으로 끌어올리려면 텍스트 의미 이외의 신호 — 클릭 이력 기반 CTR, 광고 크리에이티브 피처, 컨텍스트 피처 등 — 가 필요하다.
-
-반면 Task B에서 embedding 기반 interest 모델이 베이스라인 대비 6배의 성능을 보이는 것은 모델의 설계 방향이 "의미적 관심사 모델링"에 잘 맞아떨어졌음을 의미하며, 이는 모델의 핵심 강점으로 볼 수 있다.
+Task A F1이 HistCTR baseline에 미달하는 것은 모델 설계의 실패가 아니라 **text embedding이 제공할 수 있는 정보의 본질적 한계**다. Task A 개선을 위해서는 HistCTR 등 행동 기반 신호가 필수적이다.
 
 > **실험 코드**: `experiments/hypothesis_analysis.py`  
 > **실행**: `python -X utf8 experiments/hypothesis_analysis.py`

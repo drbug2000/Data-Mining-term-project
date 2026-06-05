@@ -116,19 +116,23 @@ class MultiInterestModel(BaseRecoModel):
 
         click-only interest (_click_interests) 를 사용하여 검색 오염을 피한다.
             (1-gamma)*sim(query, ad) + gamma*max_i sim(click_v_i, ad)
-        Adaptive gamma: 클릭 이력이 없는 유저는 query-ad 유사도만 사용.
+        Adaptive gamma: 클릭 이력이 있는 유저만 interest 혼합.
+          - click 이력 있음 → gamma (0.7)
+          - search-only / cold-start → 0.0 (query-only fallback)
+          gamma_search는 _click_interests가 업데이트되지 않으므로 Task A에서는 사용하지 않는다.
         """
         q = _l2_normalize(query_emb)  # (dim,)
         a = _l2_normalize(ad_emb)     # (dim,)
         query_ad_sim = float(q @ a)
 
-        effective_gamma = self._effective_gamma(user_id)
-        if effective_gamma == 0.0:
+        # Task A 전용: 클릭 이력 있는 유저만 non-zero gamma
+        if user_id not in self._clicked_users:
             return query_ad_sim
 
+        gamma = self.config.gamma
         V = _l2_normalize(self._get_or_init_store(self._click_interests, user_id))  # (k, dim)
         interest_ad_sim = float((V @ a).max())
-        return (1 - effective_gamma) * query_ad_sim + effective_gamma * interest_ad_sim
+        return (1 - gamma) * query_ad_sim + gamma * interest_ad_sim
 
     def predict_ad(
         self,
@@ -188,7 +192,9 @@ class MultiInterestModel(BaseRecoModel):
         """
         V        = _l2_normalize(interests)           # (k, dim)
         cos_dist = 1.0 - (V @ emb_normalized)         # (k,)  코사인 거리 ∈ [0, 2]
-        raw      = np.exp(-cos_dist / self.config.temperature)
+        logits   = -cos_dist / self.config.temperature
+        logits  -= logits.max()                       # 수치 안정화: max 빼서 언더플로우 방지
+        raw      = np.exp(logits)
         return raw / raw.sum()                        # 정규화 → 합 = 1
 
     def _update_store(
