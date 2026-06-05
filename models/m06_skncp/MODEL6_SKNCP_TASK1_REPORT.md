@@ -1,174 +1,215 @@
-# Model6 SKNCP Task1 Comprehensive Report
+# Model 6 (SKNCP) — Task 1 클릭 예측 보고서
 
-실행 코드: `models/m06_skncp/experiments/task1_skncp_model6.py`  
-결과 JSON: `models/m06_skncp/results/model6_task1_results.json`  
-실행일: 2026-06-05  
+실행 코드: `models/m06_skncp/experiments/task1_skncp_model6.py`
+결과 JSON: `models/m06_skncp/results/model6_task1_results.json` · 실행일 2026-06-05
 
-주의: 이 저장소의 `shared` 코드에서는 `click_validation`을 Task B라고 부르지만, 기존
-KoSKNCP 문서와 본 요청의 문맥에 맞춰 여기서는 `(SearchID, AdID) click prediction`을
-Task1로 표기한다.
+---
 
-## 1. 결론
+## 0. 데이터셋과 용어 (먼저 정의)
 
-**권장 model6**: `K=200`, `model6_all_regularized`, threshold는 내부 CV에서 추정한
-positive rate `2.3777%`를 사용한다.
+본 과제는 **학습 데이터로 모델을 만들고, 별도의 검증 데이터로 성능을 측정**한다. 혼동을 막기
+위해 세 데이터를 명확히 구분한다.
 
-Score:
+| 이름 | 파일 | 크기 | 역할 |
+|---|---|---|---|
+| **학습 데이터 (train)** | `search_stream_training.csv` | 320,000행, 클릭 3,560 | 모델 학습 + **모든 선택**(가중치·K·임계값)의 유일한 근거 |
+| **외부 검증 (External validation)** | `click_validation_query.csv` + `..._answer.csv` | 20,000행, 클릭 229 | 과제가 제공한 **별도** 셋. 모델 개발에 **안 쓰고 최종 성능 측정에만** 사용 |
+| (참고) 테스트 | `click_test_query.csv` | 20,000행, 정답 비공개 | 최종 제출 채점용 |
 
-```text
-s = 1.5*logHist + 1.0*ad_ctr + 1.0*ip_ctr + 2.0*dev_ctr
-    + 0.0*cat_ctr + 2.0*IPS_pos + 1.0*rank
-    + 3.0*SKNCP + 1.0*raw_cos + 0.5*knn_adctr_mean
-    + log(1.7) * (1 - logged_on)
+- **External validation 이 왜 중요한가**: 학습과 SearchID 겹침이 **0.01%(1건)** 뿐이고 유저의
+  **29%가 처음 보는 유저**다. 즉 외부 검증은 "학습에서 본 적 없는 새 사용자/세션"에 대한
+  일반화 성능을 재는 셋이다. 실제 배포(미래 트래픽)와 같은 상황의 대리(proxy).
+- **내부 분할(internal split)**: 학습 데이터를 SearchID 정렬 후 앞 80%(**내부학습, 256,157행**) /
+  뒤 20%(**내부검증, 63,843행**)로 나눈다. 하이퍼파라미터·임계값은 **이 내부검증에서만** 고른다.
+- **핵심 규율**: External validation 의 정답(`click_validation_answer`)을 **무엇이든 선택에 쓰면
+  누수(leakage)**다. 외부 정답은 오직 마지막 성능 보고에만 쓴다.
+- **Task 표기 주의**: 저장소 `shared` 코드는 `click_validation`을 내부적으로 "Task B"라 부르지만,
+  본 문서는 과제 명세대로 `(SearchID, AdID) 클릭 예측 = Task1`로 표기한다.
+
+평가 지표 F1: 클릭(양성) 클래스 기준 `F1 = 2·TP / (2·TP + FP + FN)`. 양성 1.1% 의 극단
+불균형이라, **상위 몇 개를 클릭으로 예측할지(임계값)**가 점수를 크게 좌우한다.
+
+---
+
+## 1. 요약 (leak-free 권장값)
+
+**권장 모델**: SKNCP 이웃 수 **K=400** (내부검증 F1 로 선택), `model6_all_regularized` 가중치,
+임계값 = **내부 교차검증(CV)에서 추정한 양성비율**.
+
+점수식:
+```
+s = 1.5·logHist + 1.0·ad_ctr + 1.0·ip_ctr + 2.0·dev_ctr + 0.0·cat_ctr
+    + 2.0·IPS_pos + 1.0·rank + 3.0·SKNCP + 1.0·raw_cos + 0.5·knn_adctr_mean
+    + log(1.7)·(1 − logged_on)
+예측 = 점수 상위 (내부 CV 양성비율)% 를 클릭으로
 ```
 
-최종 외부 validation 성능:
+**최종 외부 검증 성능 (K 도 임계값도 학습 데이터로만 선택 = leak-free)**:
 
-| threshold | F1 | Precision | Recall | Predicted positives | TP | AUC |
-|---|---:|---:|---:|---:|---:|---:|
-| train prevalence 1.1125% | 0.0798 | 0.0811 | 0.0786 | 222 | 18 | 0.7005 |
-| **internal CV rate 2.3777%** | **0.0993** | 0.0735 | 0.1528 | 476 | 35 | 0.7005 |
-| internal split rate 2.8319% | 0.1006 | 0.0707 | 0.1747 | 566 | 40 | 0.7005 |
-| oracle top-k, report only | 0.1049 | - | - | 629 | - | 0.7005 |
-
-Bootstrap validation:
-
-| threshold | Bootstrap mean F1 | 95% CI |
-|---|---:|---:|
-| train prevalence | 0.0740 | [0.0437, 0.1109] |
-| **internal CV rate** | **0.0979** | **[0.0684, 0.1307]** |
-| internal split rate | 0.1003 | [0.0717, 0.1308] |
-
-해석: split-rate가 validation F1은 0.1006으로 조금 높지만, 내부 split 하나에 더 의존한다.
-보고서 기준 최종값은 더 보수적인 **CV-rate F1 0.0993**으로 둔다.
-
-## 2. EDA 근거
-
-데이터 규모와 난점:
-
-| 항목 | 값 |
-|---|---:|
-| Train rows / clicks / CTR | 320,000 / 3,560 / 1.1125% |
-| External validation rows / clicks / CTR | 20,000 / 229 / 1.1450% |
-| Train과 external SearchID overlap | 1건 |
-| External 미관측 user 비율 | 28.96% |
-| 검색당 광고 수 | 1개 57.23%, 2개 42.77% |
-
-주요 관찰:
-
-| 관찰 | 수치 | 방법론 반영 |
-|---|---:|---|
-| 심한 class imbalance | click 약 1.1% | log-loss보다 top-k/F1 직접최적화 필요 |
-| SearchID 재등장 거의 없음 | overlap 1건 | 검색 ID memorization 불가, 일반화 feature 필요 |
-| 미관측 user 많음 | 28.96% | user-only 모델보다 ad/ip/dev/category prior와 semantic signal 필요 |
-| HistCTR는 강한 prior | external AUC 0.6818 | 기본 축으로 유지 |
-| raw query-ad cosine은 약함 | external AUC 0.5375 | 단독 모델 부적합, 보조 feature로만 사용 |
-| position bias 존재 | pos1 CTR 1.286%, pos7 CTR 0.708% | IPS_pos feature 추가 |
-| 비로그인 click rate 높음 | 1.198% vs 0.992% | `log(1.7)*(1-logged_on)` offset 유지 |
-
-HistCTR bin별 train CTR은 단조 증가했다.
-
-| HistCTR bin | CTR |
-|---|---:|
-| (0, 0.005] | 0.599% |
-| (0.005, 0.02] | 1.170% |
-| (0.02, 0.05] | 2.344% |
-| (0.05, 0.1] | 5.124% |
-| (0.1, 1.0] | 7.618% |
-
-## 3. SKNCP 검증
-
-SKNCP 정의:
-
-```text
-SKNCP(q, a) =
-  max cosine(a, clicked_ad)
-  over clicked_ad from K nearest clicked training queries to q
-```
-
-Leak 방지:
-
-| 단계 | SKNCP index |
+| 지표 | 값 |
 |---|---|
-| 내부 validation scoring | internal-train click rows only |
-| external validation scoring | full-train click rows only |
+| **외부 F1 (내부 CV 임계값)** | **0.0967** |
+| 외부 AUC | 0.7038 |
+| Bootstrap 평균 F1 | 0.0962, 95% CI **[0.0666, 0.1291]** |
+| (파생) 예측 양성 476 / TP 34 / precision 7.1% / recall 14.9% | |
+| (참고) 상한 F1 — 외부 정답으로 임계값 고른 경우, 제출 불가 | ≈0.105 |
 
-K sweep:
+> **이 수치는 누수가 없다**: K는 내부검증 F1(외부 정답 안 봄)로, 임계값은 내부 5-겹 교차검증
+> 비율로 골랐다. 외부 정답은 위 F1/AUC/부트스트랩 **측정에만** 쓰였다.
 
-| K | SKNCP internal AUC | SKNCP external AUC | SKNCP-only external F1 at prevalence |
+---
+
+## 2. EDA 기반 전제 검증
+
+설계 선택은 모두 학습 데이터에서 직접 측정한 사실에서 나왔다(재현: `experiments/eda_stats.py`).
+
+| 관찰 | 측정값 | 방법론 반영 |
+|---|---:|---|
+| 극단 class imbalance | 클릭률 **1.11%** | log-loss 대신 **F1 직접 최적화**(좌표상승) |
+| SearchID 재등장 거의 없음 | 겹침 **0.01%(1건)** | 검색 ID 암기 불가 → **일반화 feature** 필요 |
+| 처음 보는 유저 많음 | **28.96%** | user 전용 모델 부적합 → ad/ip/dev/category prior + 의미 신호 |
+| HistCTR 은 강한 prior | 구간 CTR **0.6%→7.6%** 단조↑, AUC **0.6818** | 기본 축(사전 log-odds), Laplace 평활 |
+| 직접 query-ad cosine 약함 | 단독 AUC **0.5375** | 단독 부적합 → 보조 feature 로만 |
+| 위치 편향 | pos1 **1.286%** vs pos7 **0.708%** | **IPS_pos** 항 추가 |
+| 비로그인 클릭률↑ | **1.198%** vs 0.992% | `log(1.7)·(1−logged_on)` offset |
+| 검색당 광고 1~2개 | 1개 **57.2%**, 2개 **42.8%** | 검색 내 순위(rank) 항은 보조; Task1 은 검색별 아닌 **전역 F1** |
+
+→ 전제 핵심: **(1) 극단 불균형 → 랭킹 최상단 문제, (2) cold-start(29% 미관측) → 일반화 신호
+필수, (3) 직접 텍스트 유사도(AUC 0.54)는 무의미 → 클릭 신호 기반 협업 필터(SKNCP) 필요.**
+
+---
+
+## 3. SKNCP — 의미적 k-최근접 클릭 예측
+
+**아이디어**: 클릭은 "텍스트가 비슷해서"가 아니라 "사람들이 실제로 원해서" 일어난다. 그래서
+직접 텍스트 유사도 대신 **"나와 비슷한 검색을 한 사람들이 실제 클릭한 광고"** 와의 유사도를 쓴다.
+
+```
+SKNCP(q, a) = max  cosine(a, 클릭광고)
+              clicked_ad ∈ {q 와 가장 가까운 K개 '클릭 학습 검색'에서 클릭된 광고}
+```
+
+**누수 방지**: SKNCP 이웃 인덱스를 평가 대상에 따라 분리한다.
+
+| 평가 대상 | SKNCP 인덱스(이웃 후보) |
+|---|---|
+| 내부검증 행 | **내부학습**의 클릭 행만 |
+| 외부검증 행 | **전체 학습**의 클릭 행만 |
+
+**K 민감도 (이웃 수)** — 모두 학습/검증 기준:
+
+| K | SKNCP 내부 AUC | SKNCP 외부 AUC | SKNCP 단독 외부 F1 |
 |---:|---:|---:|---:|
-| 20 | 0.5980 | 0.5889 | 0.0266 |
-| 50 | 0.5974 | 0.5823 | 0.0222 |
-| 100 | 0.5925 | 0.5817 | 0.0266 |
-| 200 | 0.5945 | 0.5730 | 0.0266 |
-| 400 | 0.5984 | 0.5719 | 0.0266 |
+| 20 | 0.598 | 0.589 | 0.027 |
+| 50 | 0.597 | 0.582 | 0.022 |
+| 100 | 0.593 | 0.582 | 0.027 |
+| 200 | 0.595 | 0.573 | 0.027 |
+| 400 | 0.598 | 0.572 | 0.027 |
 
-결론: **SKNCP 단독으로는 F1이 낮다.** 하지만 CTR/position/rank와 결합하면 top-k recall을
-개선한다. 즉 SKNCP는 단독 classifier가 아니라 sparse click prior를 보완하는 협업 필터
-feature로 쓰는 것이 맞다.
+**결론**: SKNCP **단독으로는 F1 이 매우 낮다**(클릭된 광고만 이웃에 들어와 커버리지 67%). 그러나
+직접 유사도(AUC 0.54)보다 강한 신호(AUC 0.59)이며, CTR/위치/순위와 **결합하면 top-k recall 을
+개선**한다. 즉 SKNCP 는 단독 분류기가 아니라 **희소 클릭 prior 를 보완하는 협업 필터 feature**.
 
-## 4. Fitting 및 모델 비교
+---
 
-모든 모델은 내부 sorted SearchID 80/20 split에서만 fitting했다.
+## 4. 모델·피처·가중치
 
-| 구성, K=200 | Internal F1 | External F1, CV-rate | External F1, split-rate | External AUC | Oracle F1 |
-|---|---:|---:|---:|---:|---:|
-| SKNCP only | 0.0373 | 0.0343 | 0.0353 | 0.5918 | 0.0424 |
-| HistCTR only | 0.0785 | 0.0637 | 0.0645 | 0.6847 | 0.0700 |
-| 5CTR | 0.1007 | 0.0855 | 0.0935 | 0.7022 | 0.0955 |
-| KoSKNCP core | 0.1057 | 0.0971 | 0.0946 | 0.7017 | 0.1053 |
-| **model6 all** | **0.1082** | **0.0993** | **0.1006** | 0.7005 | 0.1049 |
+**피처**: `logHist`(HistCTR), `ad_ctr`, `ip_ctr`, `dev_ctr`, `cat_ctr` (5개 신뢰 CTR, Laplace 평활
+k=20), `IPS_pos`(위치 편향 보정 `log(위치CTR/전역)`), `rank`(검색 내 HistCTR 상대순위),
+`SKNCP`, `raw_cos`(직접 의미 cosine, 보조), `knn_adctr_mean`(이웃 광고 평균 CTR).
 
-K별 best 요약:
+**가중치 학습** — F1 직접 최적화 좌표상승: 한 번에 가중치 하나만 격자 `{0,0.5,…,3.0}`로 훑어
+**내부검증 F1** 최고값에 고정, 신호를 순회 반복(수렴까지). 0 허용 → 잉여 신호 자동 제거.
 
-| K | 내부 선택 best | Internal F1 | External F1, CV-rate |
-|---:|---|---:|---:|
-| 20 | model6_no_rawcos | 0.1088 | 0.0755 |
-| 50 | model6_all_regularized | 0.1082 | 0.0871 |
-| 100 | model6_no_rawcos | 0.1082 | 0.0909 |
-| **200** | **model6_all_regularized** | **0.1082** | **0.0993** |
-| 400 | model6_all_regularized | 0.1088 | 0.0967 |
+학습된 가중치(K=400): SKNCP **3.0**(최상위) · dev_ctr 2.0 · IPS_pos 2.0 · logHist 1.5 ·
+ad_ctr/ip_ctr/rank/raw_cos/knn_adctr 1.0 내외 · **cat_ctr 0.0(제거)**.
+→ 좌표상승이 **SKNCP 를 최상위로 자동 선택** = SKNCP 의 핵심 주장 입증. cat_ctr 은 ad/ip/dev 와
+중복이라 0.
 
-내부 F1만으로는 `K=400`이 아주 근소하게 1위다. 그러나 차이는 `0.0006`이고, external
-CV-rate 검증에서는 `K=200`이 가장 높다. 따라서 validation까지 고려한 권장값은 `K=200`이다.
+**구성 비교 (K=400, 외부 F1 은 내부 CV 임계값 기준 — 전부 leak-free)**:
 
-## 5. Validation Discipline
+| 구성 | 내부 F1 | 외부 F1 | 외부 AUC |
+|---|---:|---:|---:|
+| SKNCP only | 0.037 | 0.034 | 0.592 |
+| HistCTR only | 0.079 | 0.064 | 0.685 |
+| 5CTR | 0.101 | 0.086 | 0.702 |
+| KoSKNCP core | 0.106 | 0.095 | 0.702 |
+| **model6 all** | **0.109** | **0.097** | 0.704 |
 
-적용한 검증 규율:
+---
+
+## 5. K 선택의 정직성 (누수 점검 — 중요)
+
+> **질문(검토 지적)**: "외부를 보고 K 를 정했다면 누수 아닌가?"
+
+**그렇다.** 그래서 본 보고서는 **K 를 내부검증 F1 로만 선택**한다. 두 선택 방식의 결과:
+
+| K 선택 규칙 | 고른 K | 외부 F1(CV임계) | 누수? |
+|---|---:|---:|---|
+| **내부검증 F1 최대 (채택)** | **400** | **0.0967** | **없음 (leak-free)** |
+| 외부 F1 이 최대인 K (참고만) | 200 | 0.0993 | **있음** — 외부 정답을 보고 K 선택 |
+
+- 내부검증 F1 은 K 에 거의 평평하다(K=20~400 에서 0.107~0.109). 그 중 **최대가 K=400**(0.1088)
+  이므로 이를 채택 → 외부 F1 **0.0967**. 이게 정직한(lock-box) 대표값이다.
+- 이전 판본이 헤드라인했던 **K=200(외부 F1 0.0993)** 은 외부 검증 점수를 보고 K 를 고른
+  것이므로 **누수**다. 본 판부터는 **참고용**으로만 남기고 대표값에서 제외한다.
+- 두 값의 차이(0.0967 vs 0.0993)는 어차피 부트스트랩 신뢰구간(폭 ≈0.06, 양성 229개) 안의
+  통계적 노이즈라 실질 의미도 없다.
+
+---
+
+## 6. 임계값 (예측 양성 비율)
+
+점수를 0/1 로 바꾸려면 상위 몇 %를 클릭으로 찍을지 정해야 한다. **외부 정답을 보고 고르면
+누수**이므로, 학습 내부에서만 추정한다:
+
+| 임계값 방식 | 비율 | 외부 F1(K=400) | 누수? |
+|---|---:|---:|---|
+| 학습 클릭률(prevalence) | 1.11% | 0.0710 | 없음 |
+| **내부 5-겹 CV 비율 (채택)** | 2.38% | **0.0967** | 없음 |
+| 내부 단일 split 비율 | 2.83% | 0.0945 | 없음 |
+| (참고) 외부 oracle | ~3.1% | ≈0.105 | 있음(제출 불가) |
+
+내부 CV 비율(2.38%)이 prevalence(1.11%)보다 높고 외부 전이도 더 좋다 — F1 최적 양성비율이
+실제 클릭률보다 약간 높기 때문(precision-recall 균형상). 5-겹 평균이라 단일 split 보다 안정적.
+
+---
+
+## 7. 검증 규율 및 잔여 리스크
 
 | 항목 | 처리 |
 |---|---|
-| split | sorted SearchID 80/20 |
-| 내부 train rows | 256,157 |
-| 내부 validation rows | 63,843 |
-| 내부 validation CTR/ad/ip/dev/cat prior | internal-train count만 사용 |
-| 내부 validation SKNCP | internal-train clicked index만 사용 |
-| external feature 생성 | full-train count와 full-train clicked index 사용 |
-| external labels | 최종 metric과 bootstrap CI에만 사용 |
-| threshold | train prevalence, internal CV rate, internal split rate를 모두 보고 |
+| 분할 | sorted SearchID 80/20 (내부학습 256,157 / 내부검증 63,843) |
+| 내부검증 CTR·SKNCP | 내부학습 카운트/클릭 인덱스만 (자기 클릭 누수 방지) |
+| 외부 feature | 전체 학습 카운트/클릭 인덱스 (외부 정답 미사용) |
+| K, 가중치, 임계값 | **전부 내부검증으로만** 선택 |
+| 외부 정답 | 최종 F1/AUC/부트스트랩 **측정에만** |
 
-Residual risk:
-
-| 리스크 | 의미 |
+| 잔여 리스크 | 의미 |
 |---|---|
-| Positive 229개뿐인 validation | F1 CI 폭이 넓다. CV-rate F1 0.0993의 95% CI는 [0.0684, 0.1307] |
-| External 기준 best 선택 | `K=200` 추천은 validation 결과를 반영한 선택이다. 완전 lock-box 기준이면 내부 선택 `K=400`을 쓰고 F1 0.0967로 보고해야 한다 |
-| AUC 개선은 제한적 | SKNCP는 ranking 전체보다 top-k F1에 더 유리하다 |
+| 양성 229개 | F1 신뢰구간 폭이 넓다(±0.03). F1 0.01 차이는 통계적 노이즈 |
+| K 가 내부적으로 약하게 식별됨 | 내부 F1 이 K 에 평평 → 사전 default(예: KoSKNCP K=100)도 합리적 대안. 본 보고서는 내부-최대 K=400 채택 |
+| AUC 개선 제한적 | SKNCP 는 전체 랭킹보다 top-k F1 에 유리 |
 
-## 6. 최종 제안
+---
 
-Task1에서 SKNCP를 쓰려면 다음 방법을 채택한다.
+## 8. 결론
 
-1. `K=200` clicked-query SKNCP index를 만든다.
-2. Feature는 `logHist`, `ad_ctr`, `ip_ctr`, `dev_ctr`, `IPS_pos`, `rank`, `SKNCP`, `raw_cos`,
-   `knn_adctr_mean`을 사용한다.
-3. `cat_ctr`는 fitting 결과 weight 0이므로 제외해도 된다.
-4. F1 직접최적화 coordinate ascent로 weight를 fit한다.
-5. 운영 threshold는 내부 CV positive rate `2.3777%`를 기본으로 둔다.
-6. 제출/최종 보고에서는 `F1=0.0993`, `AUC=0.7005`, bootstrap 95% CI `[0.0684, 0.1307]`을
-   대표 성능으로 사용한다.
+1. **SKNCP 는 클릭 신호 기반 협업 필터**로, 직접 텍스트 유사도(AUC 0.54)의 한계를 넘는다(AUC
+   0.59). 단독은 약하나 CTR/위치/순위와 결합 시 top-k 를 보완한다.
+2. **leak-free 대표 성능 = 외부 F1 0.0967 / AUC 0.7038** (K·임계값 모두 내부검증으로 선택,
+   부트스트랩 95% CI [0.067, 0.129]).
+3. 이전 판의 K=200(0.0993)은 **외부 정답으로 K 를 고른 누수**라 참고값으로 강등.
+4. 비교: m04 content-ensemble(외부 F1 ≈0.1062) 이 더 높지만, 두 값 모두 부트스트랩 CI 안에서
+   **통계적으로 동등**. "학습한 content head" 가 "비학습 SKNCP" 보다 약간 강한 신호(외부 AUC
+   0.713 vs 0.704)이나, SKNCP 제약 하에서는 model6 이 최선.
 
-비교 관점에서, 기존 `m04` content-ensemble 보고 성능(`F1≈0.1062`)보다는 낮다. 따라서
-"SKNCP 기반 model6" 조건에서는 위 모델이 최선이고, SKNCP 제약이 없다면 content head를
-포함한 `m04` 계열이 여전히 더 강하다.
+---
 
+## 9. 재현
+```bash
+CUDA_VISIBLE_DEVICES=0 python -X utf8 models/m06_skncp/experiments/task1_skncp_model6.py
+#  -> results/model6_task1_results.json (selected=내부F1 선택=leak-free 대표값)
+```
+의존성: numpy, pandas, torch(SKNCP kNN, GPU). 모든 선택은 학습 내부 분할에서만,
+외부 정답은 최종 측정에만.
