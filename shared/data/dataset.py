@@ -352,6 +352,7 @@ class RecoDataset:
                 search_emb=search_emb,
                 ads=[],
                 category_id=self._search_cat.get(sid, -1),
+                is_logged_on=int(self._search_logged_on.get(sid, 0)),
             )
             ad_rec = AdRecord(
                 ad_id=ad_id,
