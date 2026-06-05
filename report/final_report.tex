@@ -50,10 +50,10 @@ empirically validate the smoothness assumption that this signal relies on
 click-through-rate (CTR) features as a small correction to a click-tuned
 content score, reaching a clicked-class F1 of $0.1109$ on the
 external validation set (bootstrap mean $0.104$, 95\% CI $[0.067,\,0.144]$),
-exceeding the provided baseline ($0.0436$) by $+154\%$. For Task~2 we represent queries, ads, and users in a shared text
-embedding space and maintain multiple per-user interest vectors updated online;
-this reaches NDCG@3 $=0.1538$, improving over a text-similarity-only baseline by
-$+55\%$. We choose deterministic Task~1 components (weights, $K$, and threshold)
+exceeding the provided baseline ($0.0436$) by $+154\%$. 
+For Task 2, we represent queries, advertisements, and users in a shared text embedding space and maintain multiple per-user interest vectors to capture diverse user preferences. The model updates these interest vectors using both dense search-query signals and sparse but stronger clicked-ad signals, then ranks candidates by combining query–advertisement relevance with user–advertisement preference through an adaptive mixing weight.
+This lightweight multi-interest retrieval model reaches NDCG@3 $=0.1538$, improving over a text-similarity-only baseline by
+$+56\%$. We choose deterministic Task~1 components (weights, $K$, and threshold)
 on an internal split of the training data and report the final external score
 using the frozen content-score cache included with the submission files.
 \end{abstract}
@@ -293,7 +293,16 @@ Table~\ref{tab:eda-summary} (position~1 vs.\ 7); (7) the within-search HistCTR
 projections of $x_s$ and $z_a$, trained on clicks with a class-balanced
 cross-entropy and ensembled over multiple random initializations. Unlike raw
 query--ad cosine, this click-tuned text signal is discriminative by itself
-(Figure~\ref{fig:content-head}). We then combine the content head with trusted
+(Figure~\ref{fig:content-head}).
+Formally, let $U,V\in\mathbb{R}^{384\times128}$ be learned projection matrices
+and $\tau,b$ learned scalars. For query embedding $x_s$ and ad embedding $z_a$,
+\begin{equation}
+  \mathrm{logit}(s,a)=\tau\cdot\cos\!\bigl(Ux_s,\,Vz_a\bigr)+b,
+  \label{eq:content}
+\end{equation}
+where each projected vector is L2-normalised before the dot product.
+An ensemble of 30 independently seeded heads averages the logits to reduce
+variance. We then combine the content head with trusted
 CTR priors into a cached \emph{content-strong} broad score; this broad score is
 the ``content'' term used in the final blend.\footnote{The content head uses
   stochastic training, so re-training it can produce a different content-score
@@ -434,7 +443,7 @@ The internal-validation $d$ is maximized at $K{=}200$ ($d{=}0.7342$), which is
 the value used by the final model. Two robustness observations accompany this
 choice. First, the criterion is flat: $d$ varies by under $0.012$ across the
 entire grid, so $K$ is not a sensitive hyper-parameter and the selection is not
-sensitive. Second, every other $K$ yields external F1 ${=}0.1064$, within the
+sensitive. Second, most of the other $K$ yield external F1 ${=}0.1064$, within the
 bootstrap confidence interval of the selected operating point
 (Section~\ref{sec:task1-results}), so the reported $0.1109$ sits on a stable
 plateau rather than a single tuned spike. $K{=}200$ is chosen because it
@@ -508,7 +517,7 @@ Based on this motivation, our method ranks candidate advertisements by combining
 \begin{figure}[h]
     \centering
     \includegraphics[width=1\linewidth]{figure 1.png}
-    \caption{Task~2 multi-interest model architecture.}
+    \caption{Task~2 multi-interest model architecture}
     \label{fig:example}
 \end{figure}
 Our method is a lightweight multi-interest retrieval model that directly uses the provided text embeddings. The main idea is to represent each user with multiple interest vectors and to rank advertisements by combining the current query context with the user’s historical preference.
@@ -549,7 +558,7 @@ v_{u,i} + \eta(e) w_i \hat{e}
 where
 
 \[
-\hat{e} = \frac{e}{\lVert e \rVert_2}
+\hat{e} = \frac{e}{\lVert e \rVert2}
 \]
 
 is the normalized event embedding, and $\operatorname{norm}(\cdot)$ denotes L2 normalization. The update strength $\eta(e)$ depends on the type of behavioral signal:
