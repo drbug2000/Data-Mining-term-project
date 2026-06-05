@@ -44,7 +44,10 @@ from models.m06_skncp.experiments.task1_skncp_model6 import (
 )
 from shared.data.dataset import RecoDataset
 
-CONTENT_SCORE_CACHE = Path("/tmp/cs_cache.npz")
+# Pinned repo cache is the canonical 0.1109 draw; /tmp is ephemeral fallback for
+# fresh regen via exp_content_strong.py. Repo copy wins so reboots don't break repro.
+_REPO_CACHE = OUT_DIR / "cs_cache.npz"
+CONTENT_SCORE_CACHE = _REPO_CACHE if _REPO_CACHE.exists() else Path("/tmp/cs_cache.npz")
 OUT_JSON = OUT_DIR / "model6_boosted_task1_results.json"
 
 K_SKNN = 200
