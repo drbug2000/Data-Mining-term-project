@@ -15,7 +15,17 @@ import numpy as np, pandas as pd, torch, torch.nn as nn
 from shared.data.dataset import RecoDataset
 from models.m04_gated.gated_ctr import _best_f1_topk,_fit_f1_exponents,_l2_normalize,_binary_auc
 KS=20
-dev=torch.device("cuda" if torch.cuda.is_available() else "cpu")
+N_SEEDS=int(os.environ.get("CS_SEEDS","30"))  # 10->30: shrink ensemble variance toward bootstrap mean
+SEED_START=int(os.environ.get("CS_SEED_START","1"))
+# Device pin: CPU<->GPU float differences move content score -> non-reproducible F1.
+# Set CS_DEVICE=cpu|cuda to lock; default keeps old auto behavior but is now logged.
+_want=os.environ.get("CS_DEVICE","").strip().lower()
+if _want in ("cpu","cuda"): dev=torch.device(_want)
+else: dev=torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# Determinism: kill cudnn autotune + nondeterministic GPU reductions where possible.
+torch.use_deterministic_algorithms(True, warn_only=True)
+torch.backends.cudnn.deterministic=True; torch.backends.cudnn.benchmark=False
+print(f"[content-strong] device={dev} n_seeds={N_SEEDS} seed_start={SEED_START}")
 
 class Head(nn.Module):
     def __init__(s,d=384,h=256,p=128):
@@ -28,7 +38,7 @@ class Head(nn.Module):
         return s.scale*(qp*ap).sum(1)+s.b
 
 def train_head(qt,at,yt,qv,av,Yva,seed,epochs=55):
-    torch.manual_seed(seed)
+    torch.manual_seed(seed); torch.cuda.manual_seed_all(seed)
     m=Head().to(dev)
     pw=torch.tensor((Yva==0).sum()/max(1,(Yva==1).sum()),device=dev)  # placeholder, set from train below
     pw=torch.tensor((yt.cpu().numpy()==0).sum()/max(1,(yt.cpu().numpy()==1).sum()),device=dev)
@@ -72,11 +82,11 @@ def main():
     qv=torch.tensor(Q[mva],device=dev);av=torch.tensor(A[mva],device=dev)
     Qall=torch.tensor(Q,device=dev);Aall=torch.tensor(A,device=dev);Qet=torch.tensor(Qe,device=dev);Aet=torch.tensor(Ae,device=dev)
     con=np.zeros(len(Y));cone=np.zeros(len(pr));aucs=[]
-    for seed in range(1,11):
+    for seed in range(SEED_START,SEED_START+N_SEEDS):
         m,au=train_head(qt,at,yt,qv,av,Y[mva],seed);aucs.append(au)
         with torch.no_grad():
             con+=m(Qall,Aall).cpu().numpy();cone+=m(Qet,Aet).cpu().numpy()
-    con/=10.0;cone/=10.0
+    con/=N_SEEDS;cone/=N_SEEDS
     cmu,csd=con[mtr].mean(),con[mtr].std()+1e-9;conz=(con-cmu)/csd;conze=(cone-cmu)/csd
     # 전체 캐시 저장 → feature 조합 재실험을 head 재학습 없이
     _euid=np.array([int(e.user_id) for e,_ in pr]);_esid=np.array([int(e.search_id) for e,_ in pr])
@@ -119,14 +129,23 @@ def main():
     prev=float(Y.mean())  # train prevalence — fully leak-free rate (외부 라벨 0개)
     honest_split=f1_at_rate(se,yex,rate_split);honest_oof=f1_at_rate(se,yex,rate_oof)
     honest_prev=f1_at_rate(se,yex,prev)
+    # Honest uncertainty: 229 positives -> point F1 is noise. Bootstrap rows, report mean+CI.
+    _rb=np.random.RandomState(0);_n=len(yex);_bs=[]
+    for _ in range(2000):
+        _i=_rb.randint(0,_n,_n);_bs.append(f1_at_rate(se[_i],yex[_i],prev))
+    boot_mean=float(np.mean(_bs));boot_lo,boot_hi=[float(x) for x in np.percentile(_bs,[2.5,97.5])]
     np.savez("/tmp/cs_cache.npz",se=se,yex=yex,sva=sva,yva=yva,prev=prev)
     extf=max(honest_oof,honest_prev)
     print(f"[content-strong] content_extAUC={cauc:.4f} extAUC={exauc:.4f} int_f1={intf:.4f} "
           f"HONEST_split={honest_split:.4f} HONEST_oof={honest_oof:.4f} HONEST_prev(train%)={honest_prev:.4f} "
           f"ORACLE={_best_f1_topk(se,yex)[0]:.4f}")
+    print(f"[content-strong] BOOTSTRAP_prev F1 mean={boot_mean:.4f} CI95=[{boot_lo:.4f},{boot_hi:.4f}] "
+          f"(n_pos={int(yex.sum())} -> point estimate is noise; report this band)")
     os.makedirs("/tmp/pumasi_res",exist_ok=True)
     json.dump({"approach":"content-strong","ext_best_f1":float(extf),"ext_auc":float(exauc),"int_f1":float(intf),
-               "content_ext_auc":float(cauc),"leak_audit":"internal SearchID 80/20 only for selection; external answers final report only"},
+               "content_ext_auc":float(cauc),"boot_mean_f1":boot_mean,"boot_ci95":[boot_lo,boot_hi],
+               "n_seeds":N_SEEDS,"seed_start":SEED_START,"device":str(dev),
+               "leak_audit":"internal SearchID 80/20 only for selection; external answers final report only"},
               open("/tmp/pumasi_res/content-strong.json","w"))
     print(f"EXTERNAL_BEST_F1={extf:.4f}")
 

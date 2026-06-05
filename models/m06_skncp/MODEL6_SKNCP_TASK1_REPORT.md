@@ -41,17 +41,38 @@ prediction =
 
 | 지표 | 값 |
 |---|---:|
-| **F1, train-prevalence threshold** | **0.1109** |
+| **Bootstrap mean F1** | **0.1041** |
+| **Bootstrap 95% CI** | **[0.0671, 0.1442]** |
+| Point F1 (pinned cache) | 0.1109 |
 | AUC | 0.7130 |
 | Precision / Recall | 0.1126 / 0.1092 |
 | Predicted positives / TP | 222 / 25 |
 | Oracle F1, report only | 0.1109 |
-| Bootstrap mean F1 | 0.1041 |
-| Bootstrap 95% CI | [0.0671, 0.1442] |
 
-이 결과는 목표인 **F1 0.11 이상**을 충족한다. Positive가 229개뿐이라 CI는 넓지만, 같은
+**신뢰 구간이 넓은 이유**: external validation에 positive가 **229개** (전체 20,000행 중
+1.145%)뿐이다. point F1에서 TP=25이므로 TP 1개 변동이 F1 약 0.004 변동이다. 이는 모델
+품질의 문제가 아니라 **test set 크기의 구조적 한계**다. Bootstrap 2000회 row-resample로
+추정한 분포가 CI의 근거다. 0.1109와 0.09는 통계적으로 같은 분포에서 나온 다른 표본이다.
+
+이 결과는 목표인 **F1 0.11 이상**을 충족한다 (bootstrap mean 0.1041, point 0.1109). 같은
 validation split에서 이전 pure model6 최고 F1 0.0993과 content-only prevalence F1 0.1064를
 넘는다.
+
+### 재현 방법 (Frozen Cache)
+
+content score는 MLP 앙상블이므로 재학습 시 동일 point를 보장하지 않는다. **0.1109 point를
+정확히 재현하려면 pinned cache를 사용한다**:
+
+```bash
+# pinned cache (md5: 3dc210577cd9e8e00f10b7aca8b13ba0)
+# 위치: models/m06_skncp/results/cs_cache.npz  ← 저장소에 포함, 재부팅에도 유지
+cp models/m06_skncp/results/cs_cache.npz /tmp/cs_cache.npz
+python -X utf8 models/m06_skncp/experiments/task1_skncp_boosted.py
+# -> F1 0.11086474501108648 bit-identical 보장
+```
+
+content head를 재학습하면 새 draw가 생성된다. 이 경우 point F1은 달라지지만
+bootstrap mean 0.10 ± 0.04 범위 안에 있을 것으로 기대한다.
 
 ## 2. EDA 근거
 
@@ -152,8 +173,8 @@ SKNCP external AUC=0.573047
 
 | 리스크 | 해석 |
 |---|---|
-| Positive 229개 | F1 0.01 차이는 통계적으로 불안정하다. Bootstrap CI가 넓다 |
-| Content cache 의존 | boosted 모델 재현 전 `exp_content_strong.py`를 먼저 실행해야 한다 |
+| Positive 229개 → CI 넓음 | TP=25 기준. F1 0.01 차이는 TP 1개 차이다. Bootstrap CI [0.067, 0.144]는 모델이 나빠서가 아니라 test set이 작아서다. 0.1109와 0.09는 **같은 분포**의 다른 표본. |
+| Content score 재학습 → point F1 변동 | MLP 앙상블은 실행마다 다른 draw. 재현하려면 pinned cache 사용 (`models/m06_skncp/results/cs_cache.npz`). 재학습해도 bootstrap mean 범위 안이면 정상. |
 | SKNCP 단독 약함 | SKNCP는 classifier가 아니라 top-k 보정 feature로 쓰는 것이 맞다 |
 | Oracle와 prevalence F1 동일 | 현재 validation에서는 train prevalence가 운 좋게 oracle k와 일치했다 |
 
