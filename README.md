@@ -33,11 +33,17 @@ project-root/
 │   │   └── experiments/
 │   │       └── gnn_eval.py
 │   │
-│   └── m03_ctr_mlp/            #   CTR MLP (GNN repr + 통계 피처)
-│       ├── ctr_mlp.py          #     CTRConfig, CTRPredictor
+│   ├── m03_ctr_mlp/            #   CTR MLP (GNN repr + 통계 피처)
+│   │   ├── ctr_mlp.py          #     CTRConfig, CTRPredictor
+│   │   └── experiments/
+│   │       ├── ctr_eval.py
+│   │       └── ...
+│   │
+│   └── m04_gated/              #   F1-objective CTR log-linear + content head
+│       ├── config.py           #     GateConfig
+│       ├── gated_ctr.py        #     GatedCTRModel
 │       └── experiments/
-│           ├── ctr_eval.py
-│           └── ...
+│           └── eval_gated.py
 │
 ├── analysis/                   # 데이터·임베딩 범용 분석 (모델 독립)
 │   ├── embedding_clustering.py
@@ -92,6 +98,9 @@ python -X utf8 models/m02_gnn/experiments/gnn_eval.py
 
 # CTR MLP 평가
 python -X utf8 models/m03_ctr_mlp/experiments/ctr_eval.py
+
+# GatedCTR 평가
+python -X utf8 models/m04_gated/experiments/eval_gated.py
 ```
 
 ---
@@ -101,7 +110,7 @@ python -X utf8 models/m03_ctr_mlp/experiments/ctr_eval.py
 ### 1. 디렉토리 생성
 
 ```
-models/m04_your_model/
+models/m0X_your_model/
 ├── __init__.py
 ├── config.py          # YourConfig dataclass
 ├── your_model.py      # YourModel(BaseRecoModel)
@@ -112,11 +121,11 @@ models/m04_your_model/
 ### 2. `BaseRecoModel` 상속
 
 ```python
-# models/m04_your_model/your_model.py
+# models/m0X_your_model/your_model.py
 from __future__ import annotations
 import numpy as np
 from shared.base import BaseRecoModel
-from models.m04_your_model.config import YourConfig
+from models.m0X_your_model.config import YourConfig
 
 
 class YourModel(BaseRecoModel):
@@ -138,15 +147,15 @@ class YourModel(BaseRecoModel):
 ### 3. `__init__.py` 등록
 
 ```python
-# models/m04_your_model/__init__.py
-from models.m04_your_model.config import YourConfig
-from models.m04_your_model.your_model import YourModel
+# models/m0X_your_model/__init__.py
+from models.m0X_your_model.config import YourConfig
+from models.m0X_your_model.your_model import YourModel
 ```
 
 ### 4. 실험 스크립트 작성
 
 ```python
-# models/m04_your_model/experiments/your_eval.py
+# models/m0X_your_model/experiments/your_eval.py
 from __future__ import annotations
 import sys, time
 from pathlib import Path
@@ -158,7 +167,7 @@ sys.path.insert(0, str(ROOT))
 from shared.data.dataset import RecoDataset
 from shared.eval.predictor import train, score_task_a, score_task_b
 from shared.eval.predictor import evaluate_task_a, evaluate_task_b_ndcg
-from models.m04_your_model import YourConfig, YourModel
+from models.m0X_your_model import YourConfig, YourModel
 
 DATASET_DIR = ROOT / "../datasets"
 SEED = 42
@@ -199,6 +208,7 @@ if __name__ == "__main__":
 | `from model.batch_interest import BatchMultiInterestModel` | `from models.m01_interest import BatchMultiInterestModel` |
 | `from model.gnn import GNNConfig, GNNModel` | `from models.m02_gnn import GNNConfig, GNNModel` |
 | `from model.ctr_mlp import CTRConfig, CTRPredictor` | `from models.m03_ctr_mlp import CTRConfig, CTRPredictor` |
+| `from model.gated_ctr import GateConfig, GatedCTRModel` | `from models.m04_gated import GateConfig, GatedCTRModel` |
 
 `ROOT` 경로 (실험 스크립트):
 
@@ -211,52 +221,16 @@ if __name__ == "__main__":
 
 ## 현재 모델 성능 (validation 기준)
 
-### Task A — Click Prediction (지표: F1, IsClick=1 기준)
+`m04_gated`는 2026-06-04 재실행 결과, `m03_ctr_mlp`는 2026-06-03 실험 로그 기준이다.
+MRR은 해당 평가 스크립트에서 보고한 모델만 기재했다.
 
-| 모델 | F1 | AUC | Precision | Recall | 비고 |
-|------|:--:|:---:|:---------:|:------:|------|
-| **m03 GNN + CTR MLP** ★ | **0.0921** | 0.5836 | 0.0921 | 0.0917 | 현재 최고 |
-| m01 MultiInterest (streaming) | 0.0335 | 0.5576 | — | — | |
-| m01 Batch-KMeans | 0.0322 | 0.5695 | — | — | |
-| HistCTR baseline | 0.0436 | — | — | — | 단순 CTR 기반 |
-| Always-0 baseline | 0.0000 | 0.5000 | — | — | |
-
-### Task B — Ad Recommendation (지표: NDCG@3)
-
-| 모델 | NDCG@3 | Rank@1 | 비고 |
-|------|:------:|:------:|------|
-| **m01 MultiInterest (streaming)** ★ | **0.1445** | 26/214 | 현재 최고 |
-| m01 Batch-KMeans | 0.1246 | — | |
-| m01 Batch-SVD | 0.0936 | — | |
-| m03 GNN + CTR MLP | 0.0906 | 17/214 | |
-| Query-only baseline | 0.0989 | — | |
-| HistCTR baseline | 0.0211 | — | |
-
-> **★ 최고 성능 구성 상세**
->
-> **Task A** — `m03 GNN + CTR MLP`
-> - GNN: `n_layers=2`, `agg_fn=mean`, `click_weight=5`
-> - 그래프: `transductive=True`, `include_test=True`, `top_k_sim=5`
->   - `search_to_ad_click` (3,560개, click_weight=5 균등)
->   - `user_to_search` (240,698개, 클릭발생 search=3.0 / 기타=1.0)
->   - `search_to_search_sim` top-5 cosine, 클릭발생 search에서만 (34,868개)
->   - `ad_to_ad_sim` top-5 cosine, 클릭발생 ad에서만 (19,464개)
-> - MLP 피처 (10d): `sim_sa`, `log_pos`, `inv_pos`, `is_top1`, `hist_ctr`,
->   `cat_match`, `search_cat_id`, `ad_cat_id`, `log_price`, `is_logged_on`
-> - MLP 설정: `hidden_dim=64→32`, `dropout=0.4`, `AdamW(wd=1e-3)`, Focal Loss, Early Stopping
->
-> **Task B** — `m01 MultiInterest (streaming)`
-> - `k=5`, `alpha_search=0.01`, `alpha_click=0.5`, `gamma=0.7`, `gamma_search=0.5`
-
----
-
-## 유저 그룹별 Task A 성능 분석 (m03 최고 구성 기준)
-
-| 유저 그룹 | 비율 | F1 | AUC | sim_sa Gap |
-|-----------|:----:|:--:|:---:|:----------:|
-| 신규 유저 (cold-start) | 29% | **0.1170** | 0.6317 | +0.058 |
-| 기존 유저 (검색만) | 47% | 0.0941 | 0.5469 | -0.030 |
-| 기존 유저 (클릭 이력) | 24% | 0.0522 | 0.5561 | +0.002 |
-
-- cold-start 유저에서 성능이 가장 높음 (GNN repr = 순수 text emb)
-- 클릭 이력 유저에서 GNN 전파가 `sim_sa` 신호를 희석시키는 한계 존재
+| 모델 | Task A F1 | Task A AUC | Task B NDCG@3 | Task B MRR |
+|------|:---------:|:----------:|:-------------:|:----------:|
+| m04 GatedCTR (5 CTR + content, F1-objective) | **0.0955** | **0.7028** | 0.1368 | — |
+| m03 CTR MLP (10d, pos+cat) | 0.0760 | 0.6691 | 0.0906 | — |
+| m01 MultiInterest (streaming) | 0.0335 | 0.5576 | 0.1445 | 0.1582 |
+| m01 Batch-KMeans | 0.0322 | 0.5695 | 0.1246 | 0.1344 |
+| m01 Batch-SVD | 0.0331 | 0.5706 | 0.0936 | 0.1086 |
+| m02 GNN | — | — | — | — |
+| Query-only baseline | 0.0250 | 0.5375 | 0.0989 | 0.1197 |
+| HistCTR baseline | 0.0436 | — | 0.0211 | — |
