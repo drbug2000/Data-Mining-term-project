@@ -90,13 +90,10 @@ def main() -> None:
                         batch_size=1024, lr=3e-4,
                         focal_gamma=2.0, smooth_prior=10)
 
-    # 12d 피처 (sim_sa_raw + is_click_user 추가) 기준으로 L=2, L=4 비교
+    # 최고 baseline: L=2, cw=5, top_k_sim=5 (hist_ctr 제외 9d 피처)
     experiments = [
-        ("L=2 (sim_sa_gnn+raw+flag)",
+        ("baseline-no-histctr (9d)",
          dict(n_layers=2, agg_fn="mean", click_weight=5.0,
-              residual_alpha=0.0, user_click_init=False)),
-        ("L=4 (sim_sa_gnn+raw+flag)",
-         dict(n_layers=4, agg_fn="mean", click_weight=5.0,
               residual_alpha=0.0, user_click_init=False)),
     ]
 
