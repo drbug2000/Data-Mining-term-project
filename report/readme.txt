@@ -1,6 +1,10 @@
 AI506 Data Mining and Search — Term Project
 Team: Sangjune Kim, Gyuchan An, Minseo Kang (KAIST)
 
+we will use one late pass. 
+Sangjune Kim : second time using  
+Gyuchan An, Minseo Kang : first time using 
+
 ================================================================================
 HELP RECEIVED
 ================================================================================
